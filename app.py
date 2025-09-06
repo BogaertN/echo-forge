@@ -7,6 +7,8 @@ orch = Orchestrator()
 
 st.title("EchoForge: Debate and Journal")
 
+enable_tools = st.sidebar.checkbox("Enable Tools", value=False)
+
 user_input = st.text_area("Enter your question or thought:")
 if st.button("Run Flow"):
     with st.spinner("Processing..."):

@@ -12,6 +12,9 @@ from agents.opponent import Opponent
 from agents.decider import Decider
 from agents.auditor import Auditor
 from agents.journaling_assistant import JournalingAssistant
+from journal import Journal
+from resonance_map import ResonanceMap
+from tools import ToolManager, web_search  # Added for step 130
 
 logger = logging.getLogger(__name__)
 handler = RotatingFileHandler(os.path.join(os.environ['ECHO_FORGE_DATA_DIR'], 'echo_forge.log'), maxBytes=10*1024*1024, backupCount=5)
@@ -25,6 +28,10 @@ class Orchestrator:
         self.config = self.load_config('configs/agent_routing.yaml')
         self.conn = sqlite3.connect(DB_PATH)
         self.journal_assistant = JournalingAssistant(self.config['agents']['journaling_assistant']['model'])
+        self.journal = Journal()
+        self.map = ResonanceMap()
+        self.tools = ToolManager()  # Added for step 130
+        self.tools.register_tool('web_search', web_search)  # Added for step 130
 
     def load_config(self, path):
         with open(path, 'r') as f:
@@ -65,21 +72,22 @@ class Orchestrator:
             decider = Decider(self.config['agents']['decider']['model'])
             synthesis = self.isolate_agent_call(decider, 'synthesize', (pro_arg, opp_arg))
 
+            # Added for step 130: Example tool use if enabled
+            if self.tools.enabled:
+                search_result = self.tools.call_tool('web_search', clarified)
+                synthesis += f"\nAdditional info from web: {search_result}"
+
             auditor = Auditor(self.config['agents']['auditor']['model'])
             self.isolate_agent_call(auditor, 'check', (synthesis,))
 
             journal_entry = self.journal_assistant.rephrase(synthesis)
-            self.log_to_journal(journal_entry)
+            journal_id = self.journal.create_entry(journal_entry, metadata='{"example": "data"}', tags='test,tag', ghost_loop=False)
+            self.map.visualize()
             return synthesis
         except Exception as e:
             logger.error(f"Flow error: {str(e)}")
             self.log_audit('error', str(e))
             raise
-
-    def log_to_journal(self, content):
-        cursor = self.conn.cursor()
-        cursor.execute("INSERT INTO journal_entries (content) VALUES (?)", (content,))
-        self.conn.commit()
 
     def log_audit(self, event, details):
         cursor = self.conn.cursor()
