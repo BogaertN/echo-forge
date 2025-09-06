@@ -1,0 +1,19 @@
+Build Report - EchoForge Setup
+Date and Time: Sat Sep  6 03:02:30 AM EDT 2025
+OS Version: Distributor ID:	Ubuntu
+Description:	Ubuntu 24.04.2 LTS
+Release:	24.04
+Codename:	noble
+CPU Info: Model name:                              AMD Ryzen 9 5900X 12-Core Processor
+Memory Info: Mem:            62Gi       4.4Gi        55Gi       138Mi       4.1Gi        58Gi
+Disk Space: /dev/nvme1n1p2  1.8T  320G  1.4T  19% /
+Environment Setup Complete
+Models Downloaded: NAME              ID              SIZE      MODIFIED      
+tinyllama:1.1b    2644915ede35    637 MB    5 minutes ago    
+qwen2:1.5b        f6daf2b25194    934 MB    5 minutes ago    
+phi3:mini         4f2222927938    2.2 GB    6 minutes ago    
+llama3:8b         365c0bd3c000    4.7 GB    6 minutes ago    
+gemma:2b          b50d6c999e59    1.7 GB    7 minutes ago    
+mistral:latest    6577803aa9a0    4.4 GB    3 weeks ago      
+Env Vars Set: ECHO_FORGE_DATA_DIR and OLLAMA_MODELS_DIR
+Directory Structure Created
