@@ -1,0 +1,13 @@
+agents:
+  clarifier:
+    model: gemma:2b
+  proponent:
+    model: llama3:8b
+  opponent:
+    model: phi3:mini
+  decider:
+    model: qwen2:1.5b
+  auditor:
+    model: tinyllama:1.1b
+  journaling_assistant:
+    model: tinyllama:1.1b  # Or specialist
