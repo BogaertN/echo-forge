@@ -1,0 +1,56 @@
+{
+  "default_model": "llama3:8b",
+  "agents": {
+    "clarifier": {
+      "model": "gemma:2b",
+      "temperature": 0.3,
+      "context_window": 2048
+    },
+    "proponent": {
+      "model": "llama3:8b",
+      "temperature": 0.7,
+      "context_window": 4096
+    },
+    "opponent": {
+      "model": "llama3:8b",
+      "temperature": 0.7,
+      "context_window": 4096
+    },
+    "decider": {
+      "model": "phi3:mini",
+      "temperature": 0.4,
+      "context_window": 4096
+    },
+    "auditor": {
+      "model": "qwen2:1.5b",
+      "temperature": 0.2,
+      "context_window": 2048
+    },
+    "specialist": {
+      "model": "tinyllama:1.1b",
+      "temperature": 0.6,
+      "context_window": 2048
+    },
+    "journaling_assistant": {
+      "model": "phi3:mini",
+      "temperature": 0.5,
+      "context_window": 4096
+    }
+  },
+  "upgrade_strategy": {
+    "enabled": true,
+    "low_ram_models": {
+      "clarifier": "tinyllama:1.1b",
+      "proponent": "gemma:2b",
+      "opponent": "gemma:2b"
+    },
+    "high_performance_models": {
+      "proponent": "llama3:70b",
+      "opponent": "llama3:70b"
+    }
+  },
+  "isolation": {
+    "prevent_view_mixing": true,
+    "separate_histories": true
+  }
+}

@@ -1,13 +1,54 @@
+# EchoForge Agent Model Routing Configuration
+# This YAML file assigns local LLM models to agent roles as per EchoForge Design Manual (Chapter 4).
+# Models are from open-source options via Ollama/llama.cpp: e.g., Gemma, Llama3, Phi3, Qwen2, TinyLlama.
+# Advanced: Supports model swapping/upgrades, domain-specific specialists, and MoE (Mixture of Experts) routing.
+# Format: agents > role > model (string, e.g., 'llama3:8b')
+# Optional fields: prompt_modifier (str), tools_enabled (bool), domain (str for specialists)
+
 agents:
-  clarifier:
-    model: gemma:2b
+  stoic_clarifier:
+    model: gemma:2b  # Small, fast for Socratic clarification; low param for quick loops
+    prompt_modifier: "Use no-answer loop until fully refined."
+    tools_enabled: false
+
   proponent:
-    model: llama3:8b
+    model: llama3:8b  # Medium params for strong affirmative arguments
+    tools_enabled: true  # Allow web_search for evidence
+
   opponent:
-    model: phi3:mini
+    model: phi3:mini  # Compact for critiques; efficient on low hardware
+    tools_enabled: true
+
   decider:
-    model: qwen2:1.5b
+    model: qwen2:1.5b  # Balanced for synthesis; good at neutral tones
+    prompt_modifier: "Apply tone modifiers: neutral, optimistic, pessimistic as user-specified."
+
   auditor:
-    model: tinyllama:1.1b
+    model: tinyllama:1.1b  # Tiny for quick hallucination/drift checks
+    tools_enabled: false
+
   journaling_assistant:
-    model: tinyllama:1.1b  # Or specialist
+    model: tinyllama:1.1b  # Lightweight for rephrasing and metadata gen; integrate voice-to-text
+    tools_enabled: false
+
+  # Advanced: Specialist/MoE Agents (Chapter 4) - Modular for domains
+  ethics_specialist:
+    model: llama3:8b-instruct  # Instruct-tuned for ethical reasoning
+    domain: ethics
+    tools_enabled: true  # e.g., fact_check
+
+  stats_specialist:
+    model: qwen2:7b  # Larger for statistical analysis
+    domain: stats
+    tools_enabled: true  # Integrate math tools if added
+
+  # MoE Router Example: Not a role, but config for dynamic routing (future expansion)
+  moe_router:
+    model: mixtral:8x7b  # Hypothetical MoE model; route based on query domain
+    domains: [ethics, stats, general]  # List of supported domains
+
+# Global Settings (Advanced)
+global:
+  default_model: tinyllama:1.1b  # Fallback if role not specified
+  isolation_level: process  # Options: process, class, thread - for context separation
+  tool_integration: optional  # Enable/disable tools globally if override needed

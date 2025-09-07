@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EchoForge - Private AI Reasoning Platform</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+    <!-- Accessibility: ARIA roles and keyboard navigation supported -->
+</head>
+<body>
+    <header role="banner">
+        <h1>EchoForge</h1>
+        <nav role="navigation">
+            <ul>
+                <li><a href="#clarification">Clarify Question</a></li>
+                <li><a href="#debate">Start Debate</a></li>
+                <li><a href="#journal">Journal</a></li>
+                <li><a href="#resonance">Resonance Map</a></li>
+                <li><a href="#dashboard">Dashboard</a></li>
+                <li><a href="#settings">Settings</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main role="main">
+        <!-- Onboarding Modal -->
+        <div id="onboarding" class="modal" aria-hidden="true">
+            <div class="modal-content">
+                <h2>Welcome to EchoForge</h2>
+                <p>Your private platform for reasoning and reflection.</p>
+                <ol>
+                    <li>Clarify your question using Stoic Mode.</li>
+                    <li>Start a multi-agent debate.</li>
+                    <li>Synthesize insights and journal them.</li>
+                    <li>Explore your resonance map.</li>
+                </ol>
+                <button onclick="closeOnboarding()">Get Started</button>
+            </div>
+        </div>
+
+        <!-- Core Flows Section -->
+        <section id="clarification">
+            <h2>Clarify Your Question</h2>
+            <form id="clarification-form">
+                <label for="initial-question">Enter your question:</label>
+                <textarea id="initial-question" required></textarea>
+                <button type="submit">Start Clarification</button>
+            </form>
+            <div id="clarification-dialogue" aria-live="polite"></div>
+            <button id="complete-clarification" disabled>Proceed to Debate</button>
+        </section>
+
+        <section id="debate" hidden>
+            <h2>Structured Debate</h2>
+            <p id="clarified-prompt"></p>
+            <form id="debate-config">
+                <label for="rounds">Rounds:</label>
+                <input type="number" id="rounds" value="3" min="1" max="10">
+                
+                <label for="tone">Synthesis Tone:</label>
+                <select id="tone">
+                    <option value="neutral">Neutral</option>
+                    <option value="optimistic">Optimistic</option>
+                    <option value="cautious">Cautious</option>
+                    <option value="skeptical">Skeptical</option>
+                </select>
+                
+                <fieldset>
+                    <legend>Specialists:</legend>
+                    <input type="checkbox" id="ethics" value="ethics"><label for="ethics">Ethics</label>
+                    <input type="checkbox" id="statistics" value="statistics"><label for="statistics">Statistics</label>
+                    <input type="checkbox" id="creativity" value="creativity"><label for="creativity">Creativity</label>
+                    <input type="checkbox" id="technical" value="technical"><label for="technical">Technical</label>
+                </fieldset>
+                
+                <input type="checkbox" id="enable-tools"><label for="enable-tools">Enable Tools (Web Search, etc.)</label>
+                
+                <button type="submit">Start Debate</button>
+            </form>
+            <div id="debate-transcript" aria-live="polite">
+                <!-- Debate rounds appear here -->
+            </div>
+            <button id="synthesize" disabled>Synthesize</button>
+            <div id="synthesis"></div>
+            <button id="journal-synthesis" disabled>Journal This</button>
+            <label>
+                <input type="checkbox" id="show-reasoning" checked>
+                Show Reasoning
+            </label>
+        </section>
+
+        <section id="journal">
+            <h2>Personal Journal</h2>
+            <form id="journal-form">
+                <label for="journal-content">Entry Content:</label>
+                <textarea id="journal-content" required></textarea>
+                <button type="submit">Save Entry</button>
+            </form>
+            <div id="voice-journal">
+                <input type="file" id="voice-upload" accept="audio/*">
+                <button onclick="transcribeVoice()">Transcribe Voice</button>
+            </div>
+            <div id="journal-entries">
+                <!-- Searchable list -->
+                <input type="search" id="journal-search" placeholder="Search entries...">
+                <ul id="entry-list" role="list"></ul>
+            </div>
+        </section>
+
+        <section id="resonance">
+            <h2>Resonance Map</h2>
+            <div id="resonance-map" role="img" aria-label="Resonance map visualization">
+                <!-- Canvas or SVG for graph -->
+                <canvas id="map-canvas"></canvas>
+            </div>
+            <button onclick="exportMap()">Export Map</button>
+            <div id="ghost-loops">
+                <h3>Open Ghost Loops</h3>
+                <ul></ul>
+            </div>
+        </section>
+
+        <section id="dashboard">
+            <h2>Progress Dashboard</h2>
+            <div id="gamification-stats">
+                <!-- Streaks, badges, metrics -->
+            </div>
+        </section>
+
+        <section id="settings">
+            <h2>Settings</h2>
+            <form id="settings-form">
+                <label for="db-passphrase">DB Passphrase:</label>
+                <input type="password" id="db-passphrase">
+                <button type="button" onclick="changePassphrase()">Change</button>
+                
+                <fieldset>
+                    <legend>Privacy</legend>
+                    <input type="checkbox" id="local-only" checked><label for="local-only">Local-Only Mode</label>
+                </fieldset>
+                
+                <button type="button" onclick="backupData()">Backup Data</button>
+                <button type="button" onclick="restoreData()">Restore Data</button>
+            </form>
+        </section>
+    </main>
+
+    <footer role="contentinfo">
+        <p>EchoForge v1.0 &copy; 2025 AI.Web Inc.</p>
+        <a href="#help">Help & Documentation</a>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="/static/js/main.js"></script>
+    <script src="/static/js/websocket.js"></script>
+    <script src="/static/js/debate.js"></script>
+    <script src="/static/js/journal.js"></script>
+
+    <script>
+        // Initial onboarding check
+        if (!localStorage.getItem('onboarded')) {
+            document.getElementById('onboarding').setAttribute('aria-hidden', 'false');
+            document.getElementById('onboarding').style.display = 'block';
+        }
+
+        function closeOnboarding() {
+            document.getElementById('onboarding').style.display = 'none';
+            localStorage.setItem('onboarded', 'true');
+        }
+
+        // Accessibility: Keyboard navigation for modals
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeOnboarding();
+        });
+    </script>
+</body>
+</html>
