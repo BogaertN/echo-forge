@@ -1,699 +1,705 @@
-import logging
-import sqlite3
-import sqlcipher3  # For encrypted SQLite
 import os
-import uuid
-from typing import List, Dict, Optional, Any
-from datetime import datetime
-from contextlib import contextmanager
+import sqlite3
 import hashlib
+import secrets
+import logging
 import json
-import shutil
-import tempfile
+import time
+import threading
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Union, Tuple
+from dataclasses import dataclass
+from contextlib import contextmanager
+import base64
+import hmac
+
+try:
+    import sqlcipher3
+    SQLCIPHER_AVAILABLE = True
+except ImportError:
+    SQLCIPHER_AVAILABLE = False
+    logging.warning("SQLCipher not available, falling back to standard SQLite (data will not be encrypted)")
+
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.fernet import Fernet
 
 logger = logging.getLogger(__name__)
 
-class EncryptedDB:
-    """
-    Encrypted database handler for EchoForge using SQLCipher.
-    Manages journal entries, debates, resonance maps, gamification data,
-    with full encryption at rest. Supports backups, restores, migrations,
-    and secure queries.
-    """
+@dataclass
+class EncryptionConfig:
+    """Configuration for database encryption"""
+    cipher: str = "aes-256-cbc"
+    kdf_algorithm: str = "PBKDF2"
+    kdf_iterations: int = 256000
+    key_size: int = 32  # 256 bits
+    salt_size: int = 16
+    iv_size: int = 16
+    page_size: int = 4096
+    cache_size: int = -64000  # 64MB
+    auto_vacuum: str = "INCREMENTAL"
+    secure_delete: bool = True
+    temp_store: str = "MEMORY"
+    mmap_size: int = 268435456  # 256MB
+
+class SecureString:
+    """Secure string class for handling sensitive data like passwords"""
     
-    def __init__(self, db_path: str = "data/journal.db", passphrase: str = None):
+    def __init__(self, data: str):
+        self._data = data.encode('utf-8')
+        self._hash = hashlib.sha256(self._data).hexdigest()
+    
+    def get_value(self) -> str:
+        """Get the string value (use sparingly)"""
+        return self._data.decode('utf-8')
+    
+    def get_hash(self) -> str:
+        """Get hash of the string for comparison"""
+        return self._hash
+    
+    def verify(self, other: str) -> bool:
+        """Verify if another string matches this one"""
+        other_hash = hashlib.sha256(other.encode('utf-8')).hexdigest()
+        return hmac.compare_digest(self._hash, other_hash)
+    
+    def __del__(self):
+        """Securely clear data when object is destroyed"""
+        if hasattr(self, '_data'):
+            # Overwrite memory (best effort)
+            self._data = b'\x00' * len(self._data)
+    
+    def __str__(self):
+        return "*" * 8
+    
+    def __repr__(self):
+        return f"SecureString(hash={self._hash[:8]}...)"
+
+class EncryptionKeyManager:
+    """Manages encryption keys and key derivation"""
+    
+    def __init__(self, config: EncryptionConfig):
+        self.config = config
+        self._master_key: Optional[bytes] = None
+        self._salt: Optional[bytes] = None
+        self._key_derivation_cache = {}
+        
+    def derive_key_from_password(self, password: str, salt: bytes = None) -> Tuple[bytes, bytes]:
         """
-        Initialize the encrypted database.
+        Derive encryption key from password using PBKDF2.
         
         Args:
-            db_path: Path to the database file
-            passphrase: Encryption passphrase (if None, generate one)
+            password: Master password
+            salt: Salt for key derivation (generated if None)
+            
+        Returns:
+            Tuple of (key, salt)
         """
-        self.db_path = db_path
-        self.passphrase = passphrase or self._generate_passphrase()
-        self._ensure_db_directory()
-        self._initialize_schema()
+        if salt is None:
+            salt = secrets.token_bytes(self.config.salt_size)
         
-        logger.info(f"EncryptedDB initialized at {db_path}")
+        # Create cache key
+        cache_key = hashlib.sha256(password.encode() + salt).hexdigest()
+        
+        # Check cache first
+        if cache_key in self._key_derivation_cache:
+            return self._key_derivation_cache[cache_key], salt
+        
+        # Derive key using PBKDF2
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=self.config.key_size,
+            salt=salt,
+            iterations=self.config.kdf_iterations,
+            backend=default_backend()
+        )
+        
+        key = kdf.derive(password.encode())
+        
+        # Cache the result (limit cache size)
+        if len(self._key_derivation_cache) > 10:
+            # Remove oldest entry
+            oldest_key = next(iter(self._key_derivation_cache))
+            del self._key_derivation_cache[oldest_key]
+        
+        self._key_derivation_cache[cache_key] = key
+        
+        return key, salt
     
-    def _generate_passphrase(self) -> str:
-        """Generate a secure passphrase if none provided"""
-        # In production, this should be user-provided or from secure storage
-        passphrase = hashlib.sha256(os.urandom(32)).hexdigest()
-        logger.warning("Generated temporary passphrase. In production, use secure storage.")
-        return passphrase
+    def generate_database_key(self, password: str, salt: bytes = None) -> Tuple[str, bytes]:
+        """
+        Generate SQLCipher database key from password.
+        
+        Args:
+            password: Master password
+            salt: Salt for key derivation
+            
+        Returns:
+            Tuple of (hex_key, salt)
+        """
+        key, salt = self.derive_key_from_password(password, salt)
+        hex_key = key.hex()
+        return hex_key, salt
     
-    def _ensure_db_directory(self):
-        """Ensure data directory exists"""
+    def rotate_key(self, old_password: str, new_password: str, salt: bytes = None) -> Tuple[str, bytes]:
+        """
+        Generate new key for key rotation.
+        
+        Args:
+            old_password: Current password
+            new_password: New password
+            salt: Salt for new key derivation
+            
+        Returns:
+            Tuple of (new_hex_key, new_salt)
+        """
+        logger.info("Rotating encryption key")
+        return self.generate_database_key(new_password, salt)
+    
+    def generate_file_encryption_key(self) -> bytes:
+        """Generate key for file-level encryption (backups, exports)"""
+        return Fernet.generate_key()
+    
+    def encrypt_data(self, data: bytes, key: bytes) -> bytes:
+        """Encrypt data using AES-256-CBC"""
+        iv = secrets.token_bytes(self.config.iv_size)
+        cipher = Cipher(
+            algorithms.AES(key),
+            modes.CBC(iv),
+            backend=default_backend()
+        )
+        encryptor = cipher.encryptor()
+        
+        # Add PKCS7 padding
+        pad_len = 16 - (len(data) % 16)
+        padded_data = data + bytes([pad_len] * pad_len)
+        
+        encrypted = encryptor.update(padded_data) + encryptor.finalize()
+        
+        # Prepend IV to encrypted data
+        return iv + encrypted
+    
+    def decrypt_data(self, encrypted_data: bytes, key: bytes) -> bytes:
+        """Decrypt data using AES-256-CBC"""
+        iv = encrypted_data[:self.config.iv_size]
+        ciphertext = encrypted_data[self.config.iv_size:]
+        
+        cipher = Cipher(
+            algorithms.AES(key),
+            modes.CBC(iv),
+            backend=default_backend()
+        )
+        decryptor = cipher.decryptor()
+        
+        padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+        
+        # Remove PKCS7 padding
+        pad_len = padded_data[-1]
+        return padded_data[:-pad_len]
+
+class EncryptedDatabase:
+    """
+    Encrypted database wrapper using SQLCipher for privacy-first data storage.
+    
+    Provides transparent encryption/decryption with secure key management.
+    """
+    
+    def __init__(self, db_path: str, password: str = None, config: EncryptionConfig = None):
+        self.db_path = db_path
+        self.config = config or EncryptionConfig()
+        self.key_manager = EncryptionKeyManager(self.config)
+        self._connection_lock = threading.Lock()
+        
+        # Secure password handling
+        if password is None:
+            password = self._get_default_password()
+        
+        self.password = SecureString(password)
+        
+        # Generate or load encryption key
+        self._db_key, self._salt = self._initialize_encryption()
+        
+        # Track encryption operations
+        self._encryption_stats = {
+            "operations_count": 0,
+            "last_key_rotation": None,
+            "database_created": datetime.now(),
+            "total_encrypted_size": 0
+        }
+        
+        # Ensure database directory exists
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        
+        # Initialize database if it doesn't exist
+        if not os.path.exists(self.db_path):
+            self._create_encrypted_database()
+        
+        logger.info(f"EncryptedDatabase initialized: {self.db_path}")
+    
+    def _get_default_password(self) -> str:
+        """Get default password from environment or generate one"""
+        env_password = os.getenv('ECHOFORGE_DB_PASSWORD')
+        if env_password:
+            return env_password
+        
+        # Generate default password based on system characteristics
+        # In production, this should be user-provided or stored securely
+        system_info = f"{os.getlogin()}-{os.uname().nodename}-{self.db_path}"
+        default_password = hashlib.sha256(system_info.encode()).hexdigest()[:32]
+        
+        logger.warning("Using generated default password. Set ECHOFORGE_DB_PASSWORD environment variable for production.")
+        return default_password
+    
+    def _initialize_encryption(self) -> Tuple[str, bytes]:
+        """Initialize encryption key and salt"""
+        salt_file = f"{self.db_path}.salt"
+        
+        # Load existing salt or create new one
+        if os.path.exists(salt_file):
+            with open(salt_file, 'rb') as f:
+                salt = f.read()
+            logger.debug("Loaded existing encryption salt")
+        else:
+            salt = secrets.token_bytes(self.config.salt_size)
+            with open(salt_file, 'wb') as f:
+                f.write(salt)
+            logger.debug("Generated new encryption salt")
+        
+        # Derive database key
+        db_key, _ = self.key_manager.generate_database_key(
+            self.password.get_value(), salt
+        )
+        
+        return db_key, salt
+    
+    def _create_encrypted_database(self):
+        """Create new encrypted database"""
+        logger.info("Creating new encrypted database")
+        
+        try:
+            with self.get_connection() as conn:
+                # Test the connection by creating a simple table
+                conn.execute("CREATE TABLE IF NOT EXISTS _encryption_test (id INTEGER PRIMARY KEY)")
+                conn.execute("INSERT INTO _encryption_test (id) VALUES (1)")
+                conn.execute("DROP TABLE _encryption_test")
+                
+            logger.info("Encrypted database created successfully")
+            
+        except Exception as e:
+            logger.error(f"Error creating encrypted database: {e}")
+            raise
     
     @contextmanager
-    def _get_connection(self):
-        """Context manager for encrypted database connections"""
-        conn = sqlcipher3.connect(self.db_path)
-        try:
-            conn.execute(f"PRAGMA key = '{self.passphrase}'")
-            conn.execute("PRAGMA cipher_memory_security = ON")
-            conn.execute("PRAGMA cipher_page_size = 4096")
-            yield conn
-        finally:
-            conn.close()
-    
-    def _initialize_schema(self):
-        """Initialize database schema if not exists"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Journal Entries Table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS journal_entries (
-                    id TEXT PRIMARY KEY,
-                    content TEXT NOT NULL,
-                    title TEXT,
-                    summary TEXT,
-                    tags JSON,
-                    weights JSON,
-                    ghost_loop BOOLEAN DEFAULT FALSE,
-                    ghost_loop_reason TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    session_id TEXT,
-                    debate_id TEXT,
-                    user_edits TEXT
-                )
-            """)
-            
-            # Debates Table
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS debates (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    clarified_prompt TEXT NOT NULL,
-                    config JSON,
-                    transcript JSON,
-                    synthesis JSON,
-                    auditor_findings JSON,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Resonance Map (Graph Structure)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS resonance_nodes (
-                    id TEXT PRIMARY KEY,
-                    type TEXT NOT NULL,  -- 'entry', 'debate', 'ghost_loop'
-                    content_summary TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS resonance_edges (
-                    from_id TEXT NOT NULL,
-                    to_id TEXT NOT NULL,
-                    relation_type TEXT NOT NULL,  -- 'resolves', 'contradicts', 'relates_to', etc.
-                    strength REAL DEFAULT 1.0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (from_id, to_id, relation_type)
-                )
-            """)
-            
-            # Gamification Data
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS gamification (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    streak_count INTEGER DEFAULT 0,
-                    badges JSON DEFAULT '[]',
-                    clarity_metrics JSON,
-                    last_journal_date DATE,
-                    weekly_report JSON,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            # Ensure at least one gamification row
-            cursor.execute("INSERT OR IGNORE INTO gamification (id) VALUES (1)")
-            
-            # Indexes for performance
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_entries_created ON journal_entries(created_at)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_debates_session ON debates(session_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_edges_from ON resonance_edges(from_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_edges_to ON resonance_edges(to_id)")
-            
-            conn.commit()
-        
-        logger.info("Database schema initialized/verified")
-    
-    # Journaling Methods
-    
-    def create_journal_entry(self, content: str, metadata: Dict, session_id: str, debate_id: Optional[str] = None, user_edits: Optional[str] = None) -> str:
-        """Create a new journal entry"""
-        entry_id = str(uuid.uuid4())
-        
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO journal_entries (
-                    id, content, title, summary, tags, weights, 
-                    ghost_loop, ghost_loop_reason, session_id, debate_id, user_edits
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                entry_id,
-                content,
-                metadata.get('title'),
-                metadata.get('summary'),
-                json.dumps(metadata.get('tags', [])),
-                json.dumps(metadata.get('weights', {})),
-                metadata.get('ghost_loop', False),
-                metadata.get('ghost_loop_reason', ''),
-                session_id,
-                debate_id,
-                user_edits
-            ))
-            conn.commit()
-        
-        self._update_gamification_on_entry()
-        
-        logger.info(f"Journal entry created: {entry_id}")
-        return entry_id
-    
-    def search_journal(self, query: str = "", tags: List[str] = None, ghost_loops_only: bool = False, limit: int = 50) -> List[Dict]:
-        """Search journal entries with filters"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            sql = "SELECT * FROM journal_entries WHERE 1=1"
-            params = []
-            
-            if query:
-                sql += " AND (content LIKE ? OR title LIKE ? OR summary LIKE ?)"
-                like_query = f"%{query}%"
-                params.extend([like_query, like_query, like_query])
-            
-            if tags:
-                sql += " AND json_array_length(tags) > 0"
-                for tag in tags:
-                    sql += " AND json_extract(tags, '$[*]') LIKE ?"
-                    params.append(f"%{tag}%")
-            
-            if ghost_loops_only:
-                sql += " AND ghost_loop = 1"
-            
-            sql += " ORDER BY created_at DESC LIMIT ?"
-            params.append(limit)
-            
-            cursor.execute(sql, params)
-            rows = cursor.fetchall()
-            
-            columns = [desc[0] for desc in cursor.description]
-            results = []
-            for row in rows:
-                entry = dict(zip(columns, row))
-                entry['tags'] = json.loads(entry['tags']) if entry['tags'] else []
-                entry['weights'] = json.loads(entry['weights']) if entry['weights'] else {}
-                results.append(entry)
-            
-            return results
-    
-    def update_journal_entry(self, entry_id: str, updates: Dict):
-        """Update an existing journal entry"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            set_clause = []
-            params = []
-            for key, value in updates.items():
-                if key in ['tags', 'weights']:
-                    value = json.dumps(value)
-                set_clause.append(f"{key} = ?")
-                params.append(value)
-            
-            params.append(entry_id)
-            
-            sql = f"UPDATE journal_entries SET {', '.join(set_clause)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-            cursor.execute(sql, params)
-            conn.commit()
-            
-            if cursor.rowcount > 0:
-                logger.info(f"Journal entry updated: {entry_id}")
-                return True
-            return False
-    
-    # Debate Methods
-    
-    def save_debate(self, session_id: str, clarified_prompt: str, config: Dict) -> str:
-        """Save a new debate session"""
-        debate_id = str(uuid.uuid4())
-        
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO debates (
-                    id, session_id, clarified_prompt, config,
-                    transcript, synthesis, auditor_findings
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                debate_id,
-                session_id,
-                clarified_prompt,
-                json.dumps(config),
-                json.dumps([]),  # Initial empty transcript
-                None,
-                None
-            ))
-            conn.commit()
-        
-        logger.info(f"Debate saved: {debate_id}")
-        return debate_id
-    
-    def update_debate_transcript(self, debate_id: str, transcript: List[Dict]):
-        """Update debate transcript"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE debates SET transcript = ? WHERE id = ?",
-                (json.dumps(transcript), debate_id)
-            )
-            conn.commit()
-            
-            if cursor.rowcount > 0:
-                logger.info(f"Debate transcript updated: {debate_id}")
-                return True
-            return False
-    
-    def finalize_debate(self, debate_id: str, synthesis: str, auditor_findings: Dict):
-        """Finalize debate with synthesis and auditor results"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE debates SET synthesis = ?, auditor_findings = ? WHERE id = ?",
-                (synthesis, json.dumps(auditor_findings), debate_id)
-            )
-            conn.commit()
-            
-            if cursor.rowcount > 0:
-                logger.info(f"Debate finalized: {debate_id}")
-                return True
-            return False
-    
-    # Resonance Mapping Methods
-    
-    def add_resonance_node(self, node_type: str, content_summary: str) -> str:
-        """Add a new node to the resonance map"""
-        node_id = str(uuid.uuid4())
-        
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO resonance_nodes (id, type, content_summary) VALUES (?, ?, ?)",
-                (node_id, node_type, content_summary)
-            )
-            conn.commit()
-        
-        logger.info(f"Resonance node added: {node_id} ({node_type})")
-        return node_id
-    
-    def add_resonance_edge(self, from_id: str, to_id: str, relation_type: str, strength: float = 1.0):
-        """Add or update an edge between nodes"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT OR REPLACE INTO resonance_edges 
-                (from_id, to_id, relation_type, strength) 
-                VALUES (?, ?, ?, ?)
-            """, (from_id, to_id, relation_type, strength))
-            conn.commit()
-        
-        logger.info(f"Resonance edge added: {from_id} -> {to_id} ({relation_type})")
-    
-    def get_resonance_map(self, node_id: Optional[str] = None, max_depth: int = 3) -> Dict:
-        """Get resonance map graph, optionally centered on a node"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Get all nodes
-            cursor.execute("SELECT * FROM resonance_nodes")
-            nodes = {row[0]: {'type': row[1], 'summary': row[2]} for row in cursor.fetchall()}
-            
-            # Get all edges
-            cursor.execute("SELECT * FROM resonance_edges")
-            edges = []
-            for row in cursor.fetchall():
-                edges.append({
-                    'from': row[0],
-                    'to': row[1],
-                    'relation': row[2],
-                    'strength': row[3]
-                })
-            
-            # If centered on node, perform BFS to limit depth
-            if node_id:
-                from collections import deque
+    def get_connection(self):
+        """Get encrypted database connection"""
+        with self._connection_lock:
+            if SQLCIPHER_AVAILABLE:
+                conn = sqlcipher3.connect(self.db_path)
                 
-                visited = set()
-                queue = deque([(node_id, 0)])
-                filtered_nodes = {}
-                filtered_edges = []
+                # Set encryption key
+                conn.execute(f"PRAGMA key = \"x'{self._db_key}'\"")
                 
-                while queue:
-                    current, depth = queue.popleft()
-                    if current in visited or depth > max_depth:
-                        continue
-                    visited.add(current)
-                    if current in nodes:
-                        filtered_nodes[current] = nodes[current]
-                    
-                    # Add outgoing edges
-                    for edge in edges:
-                        if edge['from'] == current:
-                            filtered_edges.append(edge)
-                            queue.append((edge['to'], depth + 1))
-                        elif edge['to'] == current:
-                            filtered_edges.append(edge)
-                            queue.append((edge['from'], depth + 1))
+                # Configure SQLCipher settings
+                conn.execute(f"PRAGMA cipher = '{self.config.cipher}'")
+                conn.execute(f"PRAGMA kdf_iter = {self.config.kdf_iterations}")
+                conn.execute(f"PRAGMA cipher_page_size = {self.config.page_size}")
                 
-                return {'nodes': filtered_nodes, 'edges': filtered_edges}
-            
-            return {'nodes': nodes, 'edges': edges}
-    
-    def find_ghost_loops(self) -> List[Dict]:
-        """Find unresolved ghost loops"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM journal_entries 
-                WHERE ghost_loop = 1 
-                ORDER BY priority DESC, created_at DESC
-            """)
-            rows = cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
-            ghost_loops = [dict(zip(columns, row)) for row in rows]
-            for gl in ghost_loops:
-                gl['tags'] = json.loads(gl['tags']) if gl['tags'] else []
-                gl['weights'] = json.loads(gl['weights']) if gl['weights'] else {}
-            return ghost_loops
-    
-    # Gamification Methods
-    
-    def _update_gamification_on_entry(self):
-        """Update gamification stats after new entry"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Get current streak
-            cursor.execute("""
-                SELECT streak_count, last_journal_date 
-                FROM gamification WHERE id = 1
-            """)
-            current_streak, last_date = cursor.fetchone() or (0, None)
-            
-            today = datetime.now().date()
-            if last_date:
-                last_date = datetime.fromisoformat(last_date).date()
-                if (today - last_date).days == 1:
-                    new_streak = current_streak + 1
-                elif (today - last_date).days > 1:
-                    new_streak = 1
-                else:
-                    new_streak = current_streak
             else:
-                new_streak = 1
+                # Fallback to standard SQLite (with warning)
+                conn = sqlite3.connect(self.db_path)
+                logger.warning("Using unencrypted SQLite connection")
             
-            # Update badges if needed
-            cursor.execute("SELECT badges FROM gamification WHERE id = 1")
-            badges = json.loads(cursor.fetchone()[0] or '[]')
+            # Configure database settings
+            conn.execute(f"PRAGMA cache_size = {self.config.cache_size}")
+            conn.execute(f"PRAGMA temp_store = {self.config.temp_store}")
+            conn.execute(f"PRAGMA auto_vacuum = {self.config.auto_vacuum}")
+            conn.execute(f"PRAGMA mmap_size = {self.config.mmap_size}")
             
-            # Example badge logic: Consistency badge for 7-day streak
-            if new_streak >= 7 and 'consistency' not in badges:
-                badges.append('consistency')
+            if self.config.secure_delete:
+                conn.execute("PRAGMA secure_delete = ON")
             
-            # Update
-            cursor.execute("""
-                UPDATE gamification SET 
-                    streak_count = ?,
-                    last_journal_date = ?,
-                    badges = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = 1
-            """, (new_streak, today.isoformat(), json.dumps(badges)))
-            conn.commit()
+            # Enable foreign keys
+            conn.execute("PRAGMA foreign_keys = ON")
+            
+            # Set row factory for easier data access
+            conn.row_factory = sqlite3.Row
+            
+            try:
+                # Verify encryption is working
+                if SQLCIPHER_AVAILABLE:
+                    self._verify_encryption(conn)
+                
+                yield conn
+                
+            finally:
+                conn.close()
+                self._encryption_stats["operations_count"] += 1
     
-    def get_gamification_stats(self) -> Dict:
-        """Get current gamification statistics"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM gamification WHERE id = 1")
-            row = cursor.fetchone()
-            if row:
-                return {
-                    'streak_count': row[1],
-                    'badges': json.loads(row[2] or '[]'),
-                    'clarity_metrics': json.loads(row[3] or '{}'),
-                    'last_journal_date': row[4],
-                    'weekly_report': json.loads(row[5] or '{}')
-                }
-            return {}
+    def _verify_encryption(self, conn):
+        """Verify that encryption is properly enabled"""
+        try:
+            # This should work with correct key
+            cursor = conn.execute("SELECT count(*) FROM sqlite_master")
+            cursor.fetchone()
+            
+            # Verify cipher settings
+            cursor = conn.execute("PRAGMA cipher_version")
+            cipher_version = cursor.fetchone()
+            
+            if cipher_version:
+                logger.debug(f"SQLCipher version: {cipher_version[0]}")
+            else:
+                logger.warning("Unable to verify SQLCipher version")
+                
+        except Exception as e:
+            logger.error(f"Encryption verification failed: {e}")
+            raise ValueError("Database encryption verification failed")
     
-    def generate_weekly_report(self) -> Dict:
-        """Generate weekly clarity snapshot"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
+    def change_password(self, old_password: str, new_password: str) -> bool:
+        """
+        Change database encryption password.
+        
+        Args:
+            old_password: Current password
+            new_password: New password
             
-            # Get entries from last week
-            week_ago = (datetime.now() - timedelta(days=7)).isoformat()
-            cursor.execute("""
-                SELECT COUNT(*), AVG(json_extract(weights, '$.clarity')) 
-                FROM journal_entries 
-                WHERE created_at >= ?
-            """, (week_ago,))
-            count, avg_clarity = cursor.fetchone()
+        Returns:
+            True if password change successful, False otherwise
+        """
+        try:
+            # Verify old password
+            if not self.password.verify(old_password):
+                logger.error("Old password verification failed")
+                return False
             
-            report = {
-                'entries_count': count or 0,
-                'average_clarity': avg_clarity or 0,
-                'ghost_loops_closed': self._count_closed_ghost_loops(week_ago),
-                'generated_at': datetime.now().isoformat()
+            # Generate new key
+            new_key, new_salt = self.key_manager.rotate_key(
+                old_password, new_password, None
+            )
+            
+            if SQLCIPHER_AVAILABLE:
+                with self.get_connection() as conn:
+                    # Change the key
+                    conn.execute(f"PRAGMA rekey = \"x'{new_key}'\"")
+                    
+                    # Verify new key works
+                    cursor = conn.execute("SELECT count(*) FROM sqlite_master")
+                    cursor.fetchone()
+            
+            # Update stored values
+            self._db_key = new_key
+            self._salt = new_salt
+            self.password = SecureString(new_password)
+            
+            # Save new salt
+            salt_file = f"{self.db_path}.salt"
+            with open(salt_file, 'wb') as f:
+                f.write(new_salt)
+            
+            # Update stats
+            self._encryption_stats["last_key_rotation"] = datetime.now()
+            
+            logger.info("Database password changed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error changing database password: {e}")
+            return False
+    
+    def create_encrypted_backup(self, backup_path: str, backup_password: str = None) -> bool:
+        """
+        Create encrypted backup of the database.
+        
+        Args:
+            backup_path: Path for backup file
+            backup_password: Password for backup encryption (uses current if None)
+            
+        Returns:
+            True if backup successful, False otherwise
+        """
+        try:
+            if backup_password is None:
+                backup_password = self.password.get_value()
+            
+            # Generate backup encryption key
+            backup_key, backup_salt = self.key_manager.generate_database_key(
+                backup_password, None
+            )
+            
+            if SQLCIPHER_AVAILABLE:
+                with self.get_connection() as conn:
+                    # Attach backup database with new key
+                    conn.execute(f"ATTACH DATABASE '{backup_path}' AS backup KEY \"x'{backup_key}'\"")
+                    
+                    # Copy all data to backup
+                    conn.execute("SELECT sqlcipher_export('backup')")
+                    
+                    # Detach backup database
+                    conn.execute("DETACH DATABASE backup")
+            else:
+                # For unencrypted fallback, use file copy
+                import shutil
+                shutil.copy2(self.db_path, backup_path)
+            
+            # Save backup salt
+            backup_salt_file = f"{backup_path}.salt"
+            with open(backup_salt_file, 'wb') as f:
+                f.write(backup_salt)
+            
+            # Create backup metadata
+            metadata = {
+                "created_at": datetime.now().isoformat(),
+                "source_db": self.db_path,
+                "encrypted": SQLCIPHER_AVAILABLE,
+                "cipher": self.config.cipher,
+                "kdf_iterations": self.config.kdf_iterations
             }
             
-            # Save report
-            cursor.execute(
-                "UPDATE gamification SET weekly_report = ? WHERE id = 1",
-                (json.dumps(report),)
-            )
-            conn.commit()
+            metadata_file = f"{backup_path}.metadata"
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
             
-            return report
+            logger.info(f"Encrypted backup created: {backup_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error creating encrypted backup: {e}")
+            return False
     
-    def _count_closed_ghost_loops(self, since: str) -> int:
-        """Count ghost loops closed since date"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT COUNT(*) FROM journal_entries 
-                WHERE ghost_loop = 0 AND updated_at >= ? AND created_at < updated_at
-            """, (since,))
-            return cursor.fetchone()[0]
-    
-    # Backup and Restore
-    
-    def backup_database(self, backup_path: Optional[str] = None) -> str:
-        """Create encrypted backup of database"""
-        backup_path = backup_path or f"{self.db_path}.{datetime.now().strftime('%Y%m%d%H%M%S')}.bak"
-        shutil.copy(self.db_path, backup_path)
-        logger.info(f"Database backed up to {backup_path}")
-        return backup_path
-    
-    def restore_database(self, backup_path: str):
-        """Restore from backup"""
-        if not os.path.exists(backup_path):
-            raise FileNotFoundError(f"Backup not found: {backup_path}")
+    def restore_from_encrypted_backup(self, backup_path: str, backup_password: str) -> bool:
+        """
+        Restore database from encrypted backup.
         
-        # Verify backup with passphrase
+        Args:
+            backup_path: Path to backup file
+            backup_password: Password for backup decryption
+            
+        Returns:
+            True if restore successful, False otherwise
+        """
         try:
-            temp_conn = sqlcipher3.connect(backup_path)
-            temp_conn.execute(f"PRAGMA key = '{self.passphrase}'")
-            temp_conn.execute("SELECT count(*) FROM sqlite_master")
-            temp_conn.close()
-        except sqlite3.DatabaseError:
-            raise ValueError("Invalid backup or wrong passphrase")
-        
-        shutil.copy(backup_path, self.db_path)
-        logger.info(f"Database restored from {backup_path}")
+            # Load backup salt
+            backup_salt_file = f"{backup_path}.salt"
+            if not os.path.exists(backup_salt_file):
+                logger.error(f"Backup salt file not found: {backup_salt_file}")
+                return False
+            
+            with open(backup_salt_file, 'rb') as f:
+                backup_salt = f.read()
+            
+            # Generate backup key
+            backup_key, _ = self.key_manager.generate_database_key(
+                backup_password, backup_salt
+            )
+            
+            if SQLCIPHER_AVAILABLE:
+                # Create temporary connection to backup
+                backup_conn = sqlcipher3.connect(backup_path)
+                backup_conn.execute(f"PRAGMA key = \"x'{backup_key}'\"")
+                
+                # Verify backup is readable
+                cursor = backup_conn.execute("SELECT count(*) FROM sqlite_master")
+                cursor.fetchone()
+                backup_conn.close()
+                
+                # Restore to current database
+                with self.get_connection() as conn:
+                    # Attach backup database
+                    conn.execute(f"ATTACH DATABASE '{backup_path}' AS backup KEY \"x'{backup_key}'\"")
+                    
+                    # Import from backup
+                    conn.execute("SELECT sqlcipher_export('main', 'backup')")
+                    
+                    # Detach backup database
+                    conn.execute("DETACH DATABASE backup")
+            else:
+                # For unencrypted fallback, use file copy
+                import shutil
+                shutil.copy2(backup_path, self.db_path)
+            
+            logger.info(f"Database restored from encrypted backup: {backup_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error restoring from encrypted backup: {e}")
+            return False
     
-    def export_to_json(self, export_path: str):
-        """Export all data to JSON for migration"""
-        data = {
-            'journal_entries': self.search_journal(limit=999999),
-            'debates': self._get_all_debates(),
-            'resonance_map': self.get_resonance_map(),
-            'gamification': self.get_gamification_stats()
+    def export_data(self, export_path: str, tables: List[str] = None, 
+                   encrypt_export: bool = True) -> bool:
+        """
+        Export database data to file.
+        
+        Args:
+            export_path: Path for export file
+            tables: List of tables to export (all if None)
+            encrypt_export: Whether to encrypt the export file
+            
+        Returns:
+            True if export successful, False otherwise
+        """
+        try:
+            with self.get_connection() as conn:
+                # Get table list
+                if tables is None:
+                    cursor = conn.execute("""
+                        SELECT name FROM sqlite_master 
+                        WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                    """)
+                    tables = [row[0] for row in cursor.fetchall()]
+                
+                # Export data
+                export_data = {}
+                
+                for table in tables:
+                    cursor = conn.execute(f"SELECT * FROM {table}")
+                    columns = [description[0] for description in cursor.description]
+                    rows = cursor.fetchall()
+                    
+                    export_data[table] = {
+                        "columns": columns,
+                        "rows": [dict(row) for row in rows]
+                    }
+                
+                # Convert to JSON
+                json_data = json.dumps(export_data, indent=2, default=str)
+                
+                if encrypt_export:
+                    # Encrypt the export
+                    file_key = self.key_manager.generate_file_encryption_key()
+                    fernet = Fernet(file_key)
+                    encrypted_data = fernet.encrypt(json_data.encode())
+                    
+                    # Save encrypted data and key
+                    with open(export_path, 'wb') as f:
+                        f.write(encrypted_data)
+                    
+                    with open(f"{export_path}.key", 'wb') as f:
+                        f.write(file_key)
+                    
+                    logger.info(f"Encrypted data export created: {export_path}")
+                else:
+                    # Save unencrypted JSON
+                    with open(export_path, 'w') as f:
+                        f.write(json_data)
+                    
+                    logger.info(f"Data export created: {export_path}")
+                
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error exporting data: {e}")
+            return False
+    
+    def get_encryption_info(self) -> Dict[str, Any]:
+        """Get information about database encryption"""
+        info = {
+            "encrypted": SQLCIPHER_AVAILABLE,
+            "cipher": self.config.cipher,
+            "kdf_algorithm": self.config.kdf_algorithm,
+            "kdf_iterations": self.config.kdf_iterations,
+            "key_size": self.config.key_size,
+            "database_path": self.db_path,
+            "file_size": os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0,
+            "stats": self._encryption_stats.copy()
         }
         
-        with open(export_path, 'w') as f:
-            json.dump(data, f, indent=2)
+        if SQLCIPHER_AVAILABLE:
+            try:
+                with self.get_connection() as conn:
+                    # Get SQLCipher version and settings
+                    cursor = conn.execute("PRAGMA cipher_version")
+                    cipher_version = cursor.fetchone()
+                    if cipher_version:
+                        info["cipher_version"] = cipher_version[0]
+                    
+                    # Get page count and size
+                    cursor = conn.execute("PRAGMA page_count")
+                    page_count = cursor.fetchone()[0]
+                    
+                    cursor = conn.execute("PRAGMA page_size")
+                    page_size = cursor.fetchone()[0]
+                    
+                    info["pages"] = page_count
+                    info["page_size"] = page_size
+                    info["estimated_size"] = page_count * page_size
+                    
+            except Exception as e:
+                logger.error(f"Error getting encryption info: {e}")
         
-        logger.info(f"Data exported to {export_path}")
+        return info
     
-    def _get_all_debates(self) -> List[Dict]:
-        """Get all debates"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM debates")
-            rows = cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
-            debates = []
-            for row in rows:
-                debate = dict(zip(columns, row))
-                debate['config'] = json.loads(debate['config']) if debate['config'] else {}
-                debate['transcript'] = json.loads(debate['transcript']) if debate['transcript'] else []
-                debate['auditor_findings'] = json.loads(debate['auditor_findings']) if debate['auditor_findings'] else {}
-                debates.append(debate)
-            return debates
+    def vacuum_encrypted_database(self) -> bool:
+        """Vacuum the encrypted database to reclaim space"""
+        try:
+            with self.get_connection() as conn:
+                conn.execute("VACUUM")
+            
+            logger.info("Encrypted database vacuum completed")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error vacuuming encrypted database: {e}")
+            return False
     
-    def import_from_json(self, import_path: str):
-        """Import data from JSON export"""
-        with open(import_path, 'r') as f:
-            data = json.load(f)
-        
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Import journal entries
-            for entry in data.get('journal_entries', []):
-                cursor.execute("""
-                    INSERT OR REPLACE INTO journal_entries (
-                        id, content, title, summary, tags, weights, 
-                        ghost_loop, ghost_loop_reason, created_at, updated_at,
-                        session_id, debate_id, user_edits
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    entry['id'],
-                    entry['content'],
-                    entry['title'],
-                    entry['summary'],
-                    json.dumps(entry['tags']),
-                    json.dumps(entry['weights']),
-                    entry['ghost_loop'],
-                    entry['ghost_loop_reason'],
-                    entry['created_at'],
-                    entry['updated_at'],
-                    entry['session_id'],
-                    entry['debate_id'],
-                    entry['user_edits']
-                ))
-            
-            # Import debates
-            for debate in data.get('debates', []):
-                cursor.execute("""
-                    INSERT OR REPLACE INTO debates (
-                        id, session_id, clarified_prompt, config,
-                        transcript, synthesis, auditor_findings, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    debate['id'],
-                    debate['session_id'],
-                    debate['clarified_prompt'],
-                    json.dumps(debate['config']),
-                    json.dumps(debate['transcript']),
-                    debate['synthesis'],
-                    json.dumps(debate['auditor_findings']),
-                    debate['created_at']
-                ))
-            
-            # Import resonance map
-            for node_id, node in data['resonance_map'].get('nodes', {}).items():
-                cursor.execute("""
-                    INSERT OR REPLACE INTO resonance_nodes 
-                    (id, type, content_summary, created_at) 
-                    VALUES (?, ?, ?, ?)
-                """, (
-                    node_id,
-                    node['type'],
-                    node['summary'],
-                    datetime.now().isoformat()  # Use current if not provided
-                ))
-            
-            for edge in data['resonance_map'].get('edges', []):
-                cursor.execute("""
-                    INSERT OR REPLACE INTO resonance_edges 
-                    (from_id, to_id, relation_type, strength, created_at) 
-                    VALUES (?, ?, ?, ?, ?)
-                """, (
-                    edge['from'],
-                    edge['to'],
-                    edge['relation'],
-                    edge['strength'],
-                    datetime.now().isoformat()
-                ))
-            
-            # Import gamification
-            gam = data.get('gamification', {})
-            cursor.execute("""
-                UPDATE gamification SET 
-                    streak_count = ?,
-                    badges = ?,
-                    clarity_metrics = ?,
-                    last_journal_date = ?,
-                    weekly_report = ?
-                WHERE id = 1
-            """, (
-                gam.get('streak_count', 0),
-                json.dumps(gam.get('badges', [])),
-                json.dumps(gam.get('clarity_metrics', {})),
-                gam.get('last_journal_date'),
-                json.dumps(gam.get('weekly_report', {}))
-            ))
-            
-            conn.commit()
-        
-        logger.info(f"Data imported from {import_path}")
+    def check_encryption_integrity(self) -> bool:
+        """Check encryption integrity and database accessibility"""
+        try:
+            with self.get_connection() as conn:
+                # Test basic operations
+                cursor = conn.execute("SELECT count(*) FROM sqlite_master")
+                table_count = cursor.fetchone()[0]
+                
+                # Verify we can read some data
+                if table_count > 0:
+                    cursor = conn.execute("""
+                        SELECT name FROM sqlite_master 
+                        WHERE type='table' 
+                        LIMIT 1
+                    """)
+                    test_table = cursor.fetchone()
+                    
+                    if test_table:
+                        cursor = conn.execute(f"SELECT count(*) FROM {test_table[0]}")
+                        cursor.fetchone()
+                
+                logger.info("Encryption integrity check passed")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Encryption integrity check failed: {e}")
+            return False
     
-    def change_passphrase(self, new_passphrase: str):
-        """Change database encryption passphrase"""
-        with self._get_connection() as conn:
-            conn.execute(f"PRAGMA rekey = '{new_passphrase}'")
-        
-        self.passphrase = new_passphrase
-        logger.info("Database passphrase changed")
-    
-    def vacuum_database(self):
-        """Optimize and vacuum database"""
-        with self._get_connection() as conn:
-            conn.execute("VACUUM")
-            conn.commit()
-        logger.info("Database vacuumed")
-    
-    def get_database_stats(self) -> Dict:
-        """Get database statistics"""
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM journal_entries")
-            entry_count = cursor.fetchone()[0]
+    def close(self):
+        """Close database and clean up resources"""
+        try:
+            # Clear sensitive data
+            if hasattr(self, '_db_key'):
+                self._db_key = None
             
-            cursor.execute("SELECT COUNT(*) FROM debates")
-            debate_count = cursor.fetchone()[0]
+            if hasattr(self, 'password'):
+                del self.password
             
-            cursor.execute("SELECT COUNT(*) FROM resonance_nodes")
-            node_count = cursor.fetchone()[0]
+            # Clear key derivation cache
+            self.key_manager._key_derivation_cache.clear()
             
-            cursor.execute("SELECT COUNT(*) FROM resonance_edges")
-            edge_count = cursor.fetchone()[0]
-        
-        file_size = os.path.getsize(self.db_path) / (1024 * 1024)  # MB
-        
-        return {
-            'entry_count': entry_count,
-            'debate_count': debate_count,
-            'resonance_nodes': node_count,
-            'resonance_edges': edge_count,
-            'file_size_mb': round(file_size, 2),
-            'last_backup': self._get_last_backup_time()
-        }
+            logger.info("EncryptedDatabase closed and cleaned up")
+            
+        except Exception as e:
+            logger.error(f"Error closing encrypted database: {e}")
     
-    def _get_last_backup_time(self) -> Optional[str]:
-        """Get timestamp of last backup (scan for .bak files)"""
-        backups = [f for f in os.listdir(os.path.dirname(self.db_path)) if f.endswith('.bak')]
-        if backups:
-            latest = max(backups, key=lambda f: os.path.getmtime(os.path.join(os.path.dirname(self.db_path), f)))
-            return datetime.fromtimestamp(os.path.getmtime(os.path.join(os.path.dirname(self.db_path), latest))).isoformat()
-        return None
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+# Convenience functions for compatibility
+def create_encrypted_connection(db_path: str, password: str = None) -> EncryptedDatabase:
+    """Create encrypted database connection"""
+    return EncryptedDatabase(db_path, password)
+
+def verify_sqlcipher_available() -> bool:
+    """Check if SQLCipher is available"""
+    return SQLCIPHER_AVAILABLE
