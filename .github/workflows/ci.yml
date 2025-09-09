@@ -1,0 +1,574 @@
+name: EchoForge CI/CD Pipeline
+
+# Trigger the workflow on push and pull requests
+on:
+  push:
+    branches: [ main, develop, release/* ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Allow manual triggering
+
+# Environment variables
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# Permissions for GitHub token
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+  pull-requests: write
+
+jobs:
+  # =============================================================================
+  # CODE QUALITY AND LINTING
+  # =============================================================================
+  lint:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black isort flake8 mypy bandit safety
+        pip install -r requirements.txt
+        
+    - name: Run Black formatter check
+      run: black --check --diff .
+      
+    - name: Run isort import sorting check
+      run: isort --check-only --diff .
+      
+    - name: Run flake8 linting
+      run: |
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+        
+    - name: Run mypy type checking
+      run: mypy . --ignore-missing-imports --no-strict-optional
+      continue-on-error: true
+      
+    - name: Run bandit security linting
+      run: bandit -r . -f json -o bandit-report.json
+      continue-on-error: true
+      
+    - name: Run safety vulnerability check
+      run: safety check --json --output safety-report.json
+      continue-on-error: true
+      
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+          safety-report.json
+
+  # =============================================================================
+  # UNIT AND INTEGRATION TESTS
+  # =============================================================================
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.9', '3.10', '3.11', '3.12']
+        exclude:
+          # Exclude some combinations to reduce CI time
+          - os: windows-latest
+            python-version: '3.9'
+          - os: macos-latest
+            python-version: '3.9'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+        
+    - name: Install system dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y sqlite3 graphviz libgraphviz-dev
+        
+    - name: Install system dependencies (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install sqlite graphviz
+        
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio pytest-cov pytest-mock httpx faker
+        
+    - name: Download NLTK data
+      run: |
+        python -c "
+        import nltk
+        nltk.download('punkt', quiet=True)
+        nltk.download('stopwords', quiet=True)
+        nltk.download('wordnet', quiet=True)
+        nltk.download('averaged_perceptron_tagger', quiet=True)
+        nltk.download('vader_lexicon', quiet=True)
+        "
+        
+    - name: Create test environment
+      run: |
+        mkdir -p data logs temp
+        echo "ECHOFORGE_ENV=testing" > .env
+        echo "LOG_LEVEL=DEBUG" >> .env
+        echo "DB_PATH=data/test.db" >> .env
+        
+    - name: Run tests with coverage
+      run: |
+        pytest tests/ -v \
+          --cov=. \
+          --cov-report=xml \
+          --cov-report=html \
+          --cov-report=term \
+          --junit-xml=test-results.xml
+        
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-${{ matrix.os }}-py${{ matrix.python-version }}
+        path: |
+          test-results.xml
+          htmlcov/
+          
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      if: matrix.os == 'ubuntu-latest' && matrix.python-version == env.PYTHON_VERSION
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  # =============================================================================
+  # SECURITY SCANNING
+  # =============================================================================
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+        
+    - name: Run CodeQL Analysis
+      uses: github/codeql-action/analyze@v2
+      with:
+        languages: python
+
+  # =============================================================================
+  # DOCKER BUILD AND TEST
+  # =============================================================================
+  docker:
+    name: Docker Build & Test
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+          
+    - name: Build and test Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        target: testing
+        load: true
+        tags: echoforge:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Run Docker tests
+      run: |
+        docker run --rm echoforge:test
+        
+    - name: Build production image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        target: production
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: Run container structure test
+      run: |
+        curl -LO https://storage.googleapis.com/container-structure-test/latest/container-structure-test-linux-amd64
+        chmod +x container-structure-test-linux-amd64
+        ./container-structure-test-linux-amd64 test --image echoforge:test --config container-structure-test.yaml
+      continue-on-error: true
+
+  # =============================================================================
+  # INTEGRATION TESTS WITH OLLAMA
+  # =============================================================================
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'integration-test')
+    
+    services:
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+        options: >-
+          --health-cmd "curl -f http://localhost:11434/api/version || exit 1"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 5
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio httpx
+        
+    - name: Wait for Ollama to be ready
+      run: |
+        timeout 300 bash -c 'until curl -f http://localhost:11434/api/version; do sleep 5; done'
+        
+    - name: Download test model
+      run: |
+        curl -X POST http://localhost:11434/api/pull -d '{"name": "tinyllama"}'
+        sleep 30  # Wait for model download
+        
+    - name: Set up integration test environment
+      run: |
+        mkdir -p data logs temp
+        echo "ECHOFORGE_ENV=testing" > .env
+        echo "OLLAMA_BASE_URL=http://localhost:11434" >> .env
+        echo "DEFAULT_MODEL=tinyllama" >> .env
+        
+    - name: Run integration tests
+      run: |
+        pytest tests/integration/ -v --timeout=300
+      timeout-minutes: 15
+
+  # =============================================================================
+  # PERFORMANCE BENCHMARKS
+  # =============================================================================
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest-benchmark memory-profiler
+        
+    - name: Run performance benchmarks
+      run: |
+        pytest tests/performance/ -v --benchmark-json=benchmark-results.json
+        
+    - name: Store benchmark results
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        tool: 'pytest'
+        output-file-path: benchmark-results.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+
+  # =============================================================================
+  # DOCUMENTATION BUILD
+  # =============================================================================
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+        
+    - name: Install documentation dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install sphinx sphinx-rtd-theme myst-parser
+        pip install -r requirements.txt
+        
+    - name: Build documentation
+      run: |
+        cd docs
+        sphinx-build -b html . _build/html
+        
+    - name: Upload documentation
+      uses: actions/upload-artifact@v3
+      with:
+        name: documentation
+        path: docs/_build/html/
+        
+    - name: Deploy to GitHub Pages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./docs/_build/html
+
+  # =============================================================================
+  # RELEASE MANAGEMENT
+  # =============================================================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [lint, test, security, docker]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Generate changelog from git commits
+        git log --pretty=format:"- %s (%h)" $(git describe --tags --abbrev=0 HEAD^)..HEAD > CHANGELOG.md
+        echo "changelog<<EOF" >> $GITHUB_OUTPUT
+        cat CHANGELOG.md >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        
+    - name: Create GitHub Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: EchoForge ${{ github.ref }}
+        body: |
+          ## Changes in this release
+          ${{ steps.changelog.outputs.changelog }}
+          
+          ## Docker Images
+          - `ghcr.io/${{ github.repository }}:${{ github.ref_name }}`
+          - `ghcr.io/${{ github.repository }}:latest`
+          
+          ## Installation
+          ```bash
+          git clone https://github.com/${{ github.repository }}.git
+          cd echoforge
+          git checkout ${{ github.ref_name }}
+          python install.py
+          ```
+        draft: false
+        prerelease: false
+
+  # =============================================================================
+  # DEPLOYMENT TO STAGING
+  # =============================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [lint, test, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Deploy to staging environment
+      run: |
+        echo "Deploying to staging environment..."
+        # Add actual deployment steps here
+        # This could involve:
+        # - Updating Kubernetes deployments
+        # - Triggering cloud platform deployments
+        # - Running deployment scripts
+        
+    - name: Run smoke tests
+      run: |
+        echo "Running smoke tests on staging..."
+        # Add smoke tests for staging deployment
+
+  # =============================================================================
+  # DEPLOYMENT TO PRODUCTION
+  # =============================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Deploy to production environment
+      run: |
+        echo "Deploying to production environment..."
+        # Add actual production deployment steps here
+        
+    - name: Run production smoke tests
+      run: |
+        echo "Running production smoke tests..."
+        # Add production smoke tests
+
+  # =============================================================================
+  # CLEANUP AND NOTIFICATIONS
+  # =============================================================================
+  cleanup:
+    name: Cleanup & Notifications
+    runs-on: ubuntu-latest
+    needs: [lint, test, security, docker]
+    if: always()
+    
+    steps:
+    - name: Clean up artifacts
+      run: |
+        echo "Cleaning up old artifacts..."
+        
+    - name: Notify on failure
+      if: failure()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        channel: '#echoforge-ci'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        
+    - name: Notify on success
+      if: success() && github.ref == 'refs/heads/main'
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        channel: '#echoforge-ci'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+# =============================================================================
+# WORKFLOW CONFIGURATION NOTES
+# =============================================================================
+
+# Required Secrets:
+# - GITHUB_TOKEN (automatically provided)
+# - SLACK_WEBHOOK (optional, for notifications)
+
+# Required Repository Settings:
+# - Enable GitHub Pages (for documentation)
+# - Enable vulnerability alerts
+# - Enable dependency graph
+# - Set up branch protection rules
+
+# Branch Protection Rules (recommended):
+# - Require status checks to pass before merging
+# - Require branches to be up to date before merging
+# - Require review from code owners
+# - Restrict who can push to matching branches
+
+# Environment Setup:
+# - Create 'staging' and 'production' environments in repository settings
+# - Add environment-specific secrets and variables
+# - Configure deployment approval requirements
+
+# Performance Optimization:
+# - Uses caching for pip and Docker layers
+# - Runs jobs in parallel where possible
+# - Excludes certain OS/Python combinations to reduce CI time
+# - Uses fail-fast: false to see all test results
+
+# Security Features:
+# - Runs security scans with multiple tools
+# - Uploads results to GitHub Security tab
+# - Checks for vulnerabilities in dependencies
+# - Performs container security scanning
