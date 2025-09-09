@@ -11,14 +11,14 @@ from enum import Enum
 import uuid
 import traceback
 
-from agents.base_agent import BaseAgent
-from agents.stoic_clarifier import StoicClarifier
-from agents.proponent import ProponentAgent
-from agents.opponent import OpponentAgent
-from agents.decider import DeciderAgent
-from agents.auditor import AuditorAgent
-from agents.journaling_assistant import JournalingAssistant
-from agents.specialist import SpecialistAgent
+from agents.base_agent  import BaseAgent
+from agents.stoic_clarifier  import StoicClarifier
+from agents.proponent_agent  import ProponentAgent
+from agents.opponent_agent  import OpponentAgent
+from agents.decider_agent  import DeciderAgent
+from agents.auditor_agent  import AuditorAgent
+from agents.journaling_assistant  import JournalingAssistant
+from agents.specialist_agent  import SpecialistAgent
 from connection_manager import ConnectionManager
 from models import *
 from utils import generate_uuid, calculate_similarity, extract_key_concepts

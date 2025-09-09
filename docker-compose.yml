@@ -1,0 +1,568 @@
+version: '3.8'
+
+# EchoForge Docker Compose Configuration
+# ======================================
+# Multi-service deployment for EchoForge with all dependencies
+#
+# Usage:
+#   Development: docker-compose up
+#   Production:  docker-compose -f docker-compose.yml -f docker-compose.prod.yml up
+#   With Redis:  docker-compose --profile with-redis up
+
+services:
+  # =============================================================================
+  # EchoForge Application Service
+  # =============================================================================
+  echoforge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ${BUILD_TARGET:-development}
+      args:
+        - PYTHON_VERSION=${PYTHON_VERSION:-3.11}
+        - BUILD_ENV=${BUILD_ENV:-development}
+    image: echoforge:${TAG:-latest}
+    container_name: echoforge-app
+    restart: unless-stopped
+    
+    # Port mapping
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    
+    # Environment configuration
+    environment:
+      # Application settings
+      - ECHOFORGE_ENV=${ECHOFORGE_ENV:-development}
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DEBUG=${DEBUG:-true}
+      
+      # Database settings
+      - DB_PATH=/app/data/echoforge.db
+      - DB_ENABLE_ENCRYPTION=${DB_ENABLE_ENCRYPTION:-true}
+      - ENCRYPTION_KEY_FILE=/app/data/.encryption_key
+      
+      # LLM settings - connect to Ollama service
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-llama3.1}
+      - FAST_MODEL=${FAST_MODEL:-llama3.1:8b}
+      
+      # Feature flags
+      - ENABLE_VOICE=${ENABLE_VOICE:-true}
+      - ENABLE_RESONANCE=${ENABLE_RESONANCE:-true}
+      - ENABLE_GAMIFICATION=${ENABLE_GAMIFICATION:-true}
+      - ENABLE_ANALYTICS=${ENABLE_ANALYTICS:-true}
+      - ENABLE_TOOLS=${ENABLE_TOOLS:-true}
+      - ENABLE_SPECIALISTS=${ENABLE_SPECIALISTS:-true}
+      
+      # Performance settings
+      - MAX_MEMORY_USAGE_MB=${MAX_MEMORY_USAGE_MB:-1024}
+      - ENABLE_BACKGROUND_TASKS=${ENABLE_BACKGROUND_TASKS:-true}
+      
+      # Security
+      - SECRET_KEY=${SECRET_KEY:-}
+      - ENABLE_RATE_LIMITING=${ENABLE_RATE_LIMITING:-true}
+      
+      # Redis cache (if enabled)
+      - ENABLE_REDIS_CACHE=${ENABLE_REDIS_CACHE:-false}
+      - REDIS_URL=redis://redis:6379
+      
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_STRUCTURED_LOGGING=${ENABLE_STRUCTURED_LOGGING:-false}
+    
+    # Environment file
+    env_file:
+      - .env
+    
+    # Volume mounts
+    volumes:
+      # Persistent data
+      - echoforge_data:/app/data
+      - echoforge_logs:/app/logs
+      - echoforge_temp:/app/temp
+      
+      # Configuration (optional override)
+      - ./config.json:/app/config.json:ro
+      
+      # Development mode: mount source for live reload
+      - ${PWD}:/app:delegated
+    
+    # Dependencies
+    depends_on:
+      ollama:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+        required: false
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: ${ECHOFORGE_MEMORY_LIMIT:-2G}
+          cpus: "${ECHOFORGE_CPU_LIMIT:-2.0}"
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+    
+    # Networks
+    networks:
+      - echoforge-network
+    
+    # Labels
+    labels:
+      - "com.echoforge.service=application"
+      - "com.echoforge.version=${TAG:-latest}"
+      - "traefik.enable=true"
+      - "traefik.http.routers.echoforge.rule=Host(`${DOMAIN:-localhost}`)"
+      - "traefik.http.services.echoforge.loadbalancer.server.port=8000"
+
+  # =============================================================================
+  # Ollama LLM Service
+  # =============================================================================
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-latest}
+    container_name: echoforge-ollama
+    restart: unless-stopped
+    
+    # Port mapping (optional for external access)
+    ports:
+      - "${OLLAMA_HOST_PORT:-11434}:11434"
+    
+    # Environment configuration
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_ORIGINS=*
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-5m}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-3}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-4}
+      - OLLAMA_MAX_QUEUE=${OLLAMA_MAX_QUEUE:-512}
+    
+    # Volume mounts
+    volumes:
+      # Persistent model storage
+      - ollama_models:/root/.ollama
+      
+      # GPU access (uncomment if using GPU)
+      # - /dev/nvidia0:/dev/nvidia0
+      # - /dev/nvidiactl:/dev/nvidiactl
+      # - /dev/nvidia-uvm:/dev/nvidia-uvm
+    
+    # GPU support (uncomment if available)
+    # runtime: nvidia
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+    #   - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: ${OLLAMA_MEMORY_LIMIT:-8G}
+          cpus: "${OLLAMA_CPU_LIMIT:-4.0}"
+        reservations:
+          memory: 2G
+          cpus: "1.0"
+    
+    # Networks
+    networks:
+      - echoforge-network
+    
+    # Labels
+    labels:
+      - "com.echoforge.service=ollama"
+      - "com.echoforge.version=${OLLAMA_VERSION:-latest}"
+
+  # =============================================================================
+  # Redis Cache Service (Optional)
+  # =============================================================================
+  redis:
+    image: redis:${REDIS_VERSION:-7-alpine}
+    container_name: echoforge-redis
+    restart: unless-stopped
+    profiles:
+      - with-redis
+    
+    # Command with persistence and optimization
+    command: |
+      redis-server 
+      --save 60 1000 
+      --loglevel warning 
+      --maxmemory ${REDIS_MAX_MEMORY:-256mb} 
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --appendfsync everysec
+    
+    # Port mapping (optional for external access)
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    
+    # Volume mounts
+    volumes:
+      - redis_data:/data
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEMORY_LIMIT:-512M}
+          cpus: "${REDIS_CPU_LIMIT:-0.5}"
+        reservations:
+          memory: 128M
+          cpus: "0.1"
+    
+    # Networks
+    networks:
+      - echoforge-network
+    
+    # Labels
+    labels:
+      - "com.echoforge.service=redis"
+      - "com.echoforge.version=${REDIS_VERSION:-7-alpine}"
+
+  # =============================================================================
+  # Model Downloader Service (Run once to download models)
+  # =============================================================================
+  model-downloader:
+    image: ollama/ollama:${OLLAMA_VERSION:-latest}
+    container_name: echoforge-model-downloader
+    profiles:
+      - setup
+    
+    # Environment
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    
+    # Commands to download models
+    command: |
+      sh -c "
+        echo 'Waiting for Ollama service...'
+        until curl -f http://ollama:11434/api/version; do
+          sleep 5
+        done
+        
+        echo 'Downloading required models...'
+        ollama pull ${DEFAULT_MODEL:-llama3.1}
+        ollama pull ${FAST_MODEL:-llama3.1:8b}
+        
+        echo 'Downloading optional models...'
+        ollama pull ${POWERFUL_MODEL:-llama3.1:70b} || echo 'Skipped powerful model'
+        ollama pull codellama || echo 'Skipped codellama'
+        ollama pull mistral || echo 'Skipped mistral'
+        
+        echo 'Model download complete!'
+      "
+    
+    # Dependencies
+    depends_on:
+      ollama:
+        condition: service_healthy
+    
+    # Networks
+    networks:
+      - echoforge-network
+    
+    # Labels
+    labels:
+      - "com.echoforge.service=model-downloader"
+      - "com.echoforge.version=${OLLAMA_VERSION:-latest}"
+
+  # =============================================================================
+  # Database Backup Service (Optional)
+  # =============================================================================
+  backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
+    container_name: echoforge-backup
+    restart: "no"
+    profiles:
+      - backup
+    
+    # Environment
+    environment:
+      - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 2 * * *}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+      - BACKUP_COMPRESSION=${BACKUP_COMPRESSION:-true}
+    
+    # Volume mounts
+    volumes:
+      - echoforge_data:/app/data:ro
+      - echoforge_backups:/app/backups
+      - ./scripts/backup.sh:/app/backup.sh:ro
+    
+    # Command
+    command: ["crond", "-f", "-d", "0"]
+    
+    # Networks
+    networks:
+      - echoforge-network
+    
+    # Labels
+    labels:
+      - "com.echoforge.service=backup"
+
+  # =============================================================================
+  # Monitoring Service (Optional)
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION:-latest}
+    container_name: echoforge-prometheus
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    
+    # Port mapping
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
+    
+    # Configuration
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    
+    # Command
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    
+    # Networks
+    networks:
+      - echoforge-network
+    
+    # Labels
+    labels:
+      - "com.echoforge.service=prometheus"
+
+  # =============================================================================
+  # Load Balancer / Reverse Proxy (Optional)
+  # =============================================================================
+  traefik:
+    image: traefik:${TRAEFIK_VERSION:-v3.0}
+    container_name: echoforge-traefik
+    restart: unless-stopped
+    profiles:
+      - proxy
+    
+    # Port mapping
+    ports:
+      - "80:80"
+      - "443:443"
+      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
+    
+    # Configuration
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik:/etc/traefik:ro
+      - traefik_acme:/acme
+    
+    # Command
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@example.com}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/acme/acme.json"
+    
+    # Networks
+    networks:
+      - echoforge-network
+    
+    # Labels
+    labels:
+      - "com.echoforge.service=traefik"
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  echoforge-network:
+    driver: bridge
+    name: echoforge-network
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  # Application data
+  echoforge_data:
+    driver: local
+    name: echoforge_data
+    labels:
+      - "com.echoforge.volume=data"
+  
+  echoforge_logs:
+    driver: local
+    name: echoforge_logs
+    labels:
+      - "com.echoforge.volume=logs"
+  
+  echoforge_temp:
+    driver: local
+    name: echoforge_temp
+    labels:
+      - "com.echoforge.volume=temp"
+  
+  # Ollama models
+  ollama_models:
+    driver: local
+    name: echoforge_ollama_models
+    labels:
+      - "com.echoforge.volume=ollama-models"
+  
+  # Redis data
+  redis_data:
+    driver: local
+    name: echoforge_redis_data
+    labels:
+      - "com.echoforge.volume=redis-data"
+  
+  # Backups
+  echoforge_backups:
+    driver: local
+    name: echoforge_backups
+    labels:
+      - "com.echoforge.volume=backups"
+  
+  # Monitoring
+  prometheus_data:
+    driver: local
+    name: echoforge_prometheus_data
+    labels:
+      - "com.echoforge.volume=prometheus-data"
+  
+  # Traefik ACME
+  traefik_acme:
+    driver: local
+    name: echoforge_traefik_acme
+    labels:
+      - "com.echoforge.volume=traefik-acme"
+
+# =============================================================================
+# CONFIGURATION EXAMPLES
+# =============================================================================
+
+# Development usage:
+#   docker-compose up
+
+# Production usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+# With Redis cache:
+#   docker-compose --profile with-redis up
+
+# With monitoring:
+#   docker-compose --profile monitoring up
+
+# Full setup with all services:
+#   docker-compose --profile with-redis --profile monitoring --profile proxy up
+
+# Setup models:
+#   docker-compose --profile setup up model-downloader
+
+# Backup:
+#   docker-compose --profile backup up backup
+
+# Scale EchoForge instances:
+#   docker-compose up --scale echoforge=3
+
+# View logs:
+#   docker-compose logs -f echoforge
+
+# Execute commands in container:
+#   docker-compose exec echoforge python manage.py shell
+
+# =============================================================================
+# ENVIRONMENT VARIABLES
+# =============================================================================
+
+# Required:
+#   None (all have defaults)
+
+# Recommended for production:
+#   ECHOFORGE_ENV=production
+#   DEBUG=false
+#   SECRET_KEY=your-secret-key
+#   DOMAIN=your-domain.com
+#   ACME_EMAIL=your-email@example.com
+
+# Optional:
+#   TAG=v1.0.0
+#   HOST_PORT=8000
+#   OLLAMA_HOST_PORT=11434
+#   DEFAULT_MODEL=llama3.1
+#   ENABLE_REDIS_CACHE=true
+#   LOG_LEVEL=INFO
+
+# Resource limits:
+#   ECHOFORGE_MEMORY_LIMIT=2G
+#   ECHOFORGE_CPU_LIMIT=2.0
+#   OLLAMA_MEMORY_LIMIT=8G
+#   OLLAMA_CPU_LIMIT=4.0
+
+# =============================================================================
+# TROUBLESHOOTING
+# =============================================================================
+
+# Check service status:
+#   docker-compose ps
+
+# View service logs:
+#   docker-compose logs [service-name]
+
+# Restart services:
+#   docker-compose restart [service-name]
+
+# Rebuild services:
+#   docker-compose build [service-name]
+
+# Clean up:
+#   docker-compose down
+#   docker-compose down -v  # (removes volumes)
+
+# Health checks:
+#   docker-compose exec echoforge curl http://localhost:8000/health
+#   docker-compose exec ollama curl http://localhost:11434/api/version
+
+# Database access:
+#   docker-compose exec echoforge sqlite3 /app/data/echoforge.db
+
+# Model management:
+#   docker-compose exec ollama ollama list
+#   docker-compose exec ollama ollama pull new-model

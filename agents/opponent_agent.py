@@ -6,8 +6,8 @@ from datetime import datetime
 import json
 
 from .base_agent import BaseAgent, ConversationMessage, AgentResponse, AgentConfig
-from ..models import DebatePhase, ArgumentType, MessageType
-from ..utils import extract_key_concepts, calculate_similarity, clean_text
+from models import DebatePhase, ArgumentType, MessageType
+from utils import extract_key_concepts, calculate_similarity, clean_text
 
 logger = logging.getLogger(__name__)
 

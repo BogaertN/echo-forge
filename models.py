@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Any, Union, Tuple
 from dataclasses import dataclass, field, asdict
 from uuid import UUID
+from typing import Literal
 
 from pydantic import (
     BaseModel, Field, validator, root_validator,
@@ -116,6 +117,23 @@ class ToolCategory(str, Enum):
     SUMMARIZATION = "summarization"
     COMPUTATION = "computation"
 
+class ArgumentType(str, Enum):
+    """Argument type enumeration"""
+    PRO = "pro"
+    CON = "con"
+    EVIDENCE = "evidence"
+    REBUTTAL = "rebuttal"
+    SYNTHESIS = "synthesis"
+    QUESTION = "question"
+    CLARIFICATION = "clarification"
+    AUDIT = "audit"
+
+class SynthesisType(str, Enum):
+    """Synthesis type enumeration for debate synthesis styles"""
+    BRIEF = "brief"
+    COMPREHENSIVE = "comprehensive"
+    DETAILED = "detailed"
+
 # === REQUEST/RESPONSE MODELS ===
 
 class BaseRequest(BaseModel):
@@ -141,7 +159,7 @@ class BaseResponse(BaseModel):
 
 class ErrorResponse(BaseResponse):
     """Error response model"""
-    success: bool = Field(False, const=True)
+    success: Literal[False]  = False
     error_code: Optional[str] = Field(None, description="Error code for categorization")
     error_details: Optional[Dict[str, Any]] = Field(None, description="Additional error details")
     traceback: Optional[str] = Field(None, description="Error traceback for debugging")
@@ -180,11 +198,11 @@ class DebateConfig(BaseModel):
     round_timeout: int = Field(120, ge=30, le=600, description="Timeout per round in seconds")
     enable_specialists: bool = Field(True, description="Enable specialist agent consultation")
     specialist_domains: List[str] = Field(default_factory=lambda: ["ethics", "logic", "practical", "emotional"])
-    tone_modifier: str = Field("balanced", regex="^(balanced|gentle|analytical|creative)$")
+    tone_modifier: str = Field("balanced", pattern=r"^(balanced|gentle|analytical|creative)$")
     tools_enabled: bool = Field(False, description="Enable external tool integration")
     fact_checking: bool = Field(True, description="Enable fact-checking during debate")
     ghost_loop_detection: bool = Field(True, description="Enable ghost loop detection")
-    synthesis_style: str = Field("comprehensive", regex="^(brief|comprehensive|creative)$")
+    synthesis_style: str = Field("comprehensive", pattern=r"^(brief|comprehensive|creative)$")
     
     @validator('specialist_domains')
     def validate_domains(cls, v):
@@ -307,8 +325,8 @@ class JournalSearchRequest(BaseModel):
     has_debate: Optional[bool] = None
     min_word_count: Optional[int] = Field(None, ge=0)
     max_word_count: Optional[int] = Field(None, ge=1)
-    sort_by: str = Field("created_at", regex="^(created_at|updated_at|word_count|title|mood_rating)$")
-    sort_order: str = Field("desc", regex="^(asc|desc)$")
+    sort_by: str = Field("created_at", pattern=r"^(created_at|updated_at|word_count|title|mood_rating)$")
+    sort_order: str = Field("desc", pattern=r"^(asc|desc)$")
     limit: int = Field(20, ge=1, le=100)
     offset: int = Field(0, ge=0)
     
@@ -504,7 +522,7 @@ class FactCheckRequest(BaseModel):
 class FactCheckResultModel(BaseModel):
     """Fact-checking result"""
     claim: str
-    verdict: str = Field(..., regex="^(true|false|mixed|unknown)$")
+    verdict: str = Field(..., pattern=r"^(true|false|mixed|unknown)$")
     confidence: float = Field(..., ge=0.0, le=1.0)
     sources: List[Dict[str, Any]]
     explanation: str
@@ -575,7 +593,7 @@ class ModelConfig(BaseModel):
 class UserPreferences(BaseModel):
     """User preferences model"""
     session_id: str
-    theme: str = Field("auto", regex="^(light|dark|auto)$")
+    theme: str = Field("auto", pattern=r"^(light|dark|auto)$")
     language: str = Field("en", max_length=5)
     timezone: str = Field("UTC", max_length=50)
     notifications_enabled: bool = True
@@ -596,17 +614,17 @@ class SystemConfig(BaseModel):
     backup_interval_hours: int = Field(24, ge=1, le=168)
     encryption_enabled: bool = True
     tools_enabled: bool = False
-    logging_level: str = Field("INFO", regex="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
+    logging_level: str = Field("INFO", pattern=r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
 
 # === ANALYTICS MODELS ===
 
 class AnalyticsQuery(BaseModel):
     """Analytics query parameters"""
     session_id: str
-    metric_type: str = Field(..., regex="^(writing_patterns|mood_trends|topic_analysis|productivity)$")
+    metric_type: str = Field(..., pattern=r"^(writing_patterns|mood_trends|topic_analysis|productivity)$")
     date_from: Optional[date] = None
     date_to: Optional[date] = None
-    granularity: str = Field("daily", regex="^(hourly|daily|weekly|monthly)$")
+    granularity: str = Field("daily", pattern=r"^(hourly|daily|weekly|monthly)$")
 
 class WritingPatterns(BaseModel):
     """Writing patterns analytics"""
@@ -646,7 +664,7 @@ class ProductivityInsights(BaseModel):
     insights: List[str]
     recommendations: List[str]
     productivity_score: int = Field(..., ge=0, le=100)
-    consistency_rating: str = Field(..., regex="^(starting|needs_improvement|fair|good|excellent)$")
+    consistency_rating: str = Field(..., pattern=r"^(starting|needs_improvement|fair|good|excellent)$")
     growth_areas: List[str]
 
 class AnalyticsResponse(BaseModel):
@@ -674,7 +692,7 @@ class PerformanceMetrics(BaseModel):
 
 class HealthCheckResponse(BaseModel):
     """Health check response"""
-    status: str = Field(..., regex="^(healthy|degraded|unhealthy)$")
+    status: str = Field(..., pattern=r"^(healthy|degraded|unhealthy)$")
     timestamp: datetime
     version: str
     components: Dict[str, bool]
