@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import json
 
-from .base_agent import BaseAgent, ConversationMessage, AgentResponse, AgentConfig
+from agents.base_agent import BaseAgent, ConversationMessage, AgentResponse, AgentConfig
 from models import DebatePhase, ArgumentType, MessageType
 from utils import extract_key_concepts, calculate_similarity, clean_text
 
@@ -58,8 +58,24 @@ class OpponentAgent(BaseAgent):
     perspectives on debate topics.
     """
 
-    def __init__(self, config: Optional[AgentConfig] = None):
-        super().__init__(config)
+    def __init__(self, **kwargs):
+        # Default configuration optimized for opposition
+        default_config = AgentConfig(
+            model="llama3:8b",    # Larger model for complex counter-arguments
+            temperature=0.7,      # Balanced creativity and consistency
+            max_tokens=1024,      # Room for detailed rebuttals
+            timeout=90,           # More time for complex reasoning
+            enable_tools=True,    # Use tools for fact-checking
+            enable_memory=True,
+            memory_limit=30       # Remember extensive debate context
+        )
+        
+        # Merge with provided config
+        config = default_config.__dict__.copy()
+        config.update(kwargs)
+        final_config = AgentConfig(**config)
+        
+        super().__init__(final_config)
         self.agent_role = "opponent"
         self.opposition_strategies = [
             "contradiction",
@@ -802,3 +818,52 @@ class OpponentAgent(BaseAgent):
         """Clean up agent resources."""
         await super().cleanup()
         logger.info(f"OpponentAgent {self.session_id} cleaned up successfully")
+
+    def get_system_prompt(self) -> str:
+        """Get the system prompt for the opponent agent."""
+        return """You are an opponent agent in a structured debate. Your role is to:
+        1. Present strong counter-arguments to the proponent's position
+        2. Identify weaknesses, contradictions, and assumptions in their arguments
+        3. Provide evidence and reasoning that challenges their claims
+        4. Maintain a respectful but firm opposing stance
+        5. Help explore all sides of complex issues
+        
+        Be thorough, logical, and constructive in your opposition."""
+
+    async def process_request(self, request: str, context: Dict[str, Any] = None) -> AgentResponse:
+        """Process a request and generate an opponent response."""
+        try:
+            if context is None:
+                context = {}
+            
+            # Build the prompt for opposition
+            prompt = f"""
+            Context: You are debating against the following position.
+            
+            Proponent's Argument: {request}
+            
+            Your task: Provide a strong counter-argument that challenges this position.
+            Focus on logical flaws, alternative perspectives, and contradictory evidence.
+            Be respectful but firm in your opposition.
+            """
+            
+            # Get response from LLM
+            response = await self._get_llm_response(prompt, context)
+            
+            return AgentResponse(
+                agent_id=self.agent_id,
+                content=response,
+                metadata={
+                    "agent_type": "opponent",
+                    "timestamp": datetime.now().isoformat(),
+                    "context": context
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in opponent agent request processing: {e}")
+            return AgentResponse(
+                agent_id=self.agent_id,
+                content="I encountered an error while generating my counter-argument.",
+                metadata={"error": str(e)}
+            )

@@ -20,9 +20,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ValidationError
-import whisper
+try:
+    import whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    print("Warning: Whisper not available, voice features disabled")
+    WHISPER_AVAILABLE = False
+    whisper = None
 import numpy as np
-import soundfile as sf
+try:
+    import soundfile as sf
+except ImportError:
+    print("soundfile not available")
+    sf = None
 
 # Local imports
 from orchestrator import EchoForgeOrchestrator

@@ -824,3 +824,38 @@ ConnectionID = str
 BadgeID = str
 Timestamp = datetime
 Rating = Optional[int]  # 1-10 scale
+
+from enum import Enum
+
+class AuditSeverity(Enum):
+    """Severity levels for audit findings."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+class JournalEntryType(Enum):
+    """Types of journal entries."""
+    REFLECTION = "reflection"
+    INSIGHT = "insight"
+    DEBATE_SUMMARY = "debate_summary"
+    PERSONAL_NOTE = "personal_note"
+    LEARNING_OUTCOME = "learning_outcome"
+
+class ReflectionDepth(Enum):
+    """Depth levels for reflection analysis."""
+    SURFACE = "surface"
+    MODERATE = "moderate"
+    DEEP = "deep"
+    PROFOUND = "profound"
+
+class SpecialistType(Enum):
+    """Types of specialist agents."""
+    SCIENCE = "science"
+    ETHICS = "ethics"
+    ECONOMICS = "economics"
+    HISTORY = "history"
+    LEGAL = "legal"
+    TECHNOLOGY = "technology"
+    PHILOSOPHY = "philosophy"
+    PSYCHOLOGY = "psychology"

@@ -1,0 +1,8 @@
+ArgumentType
+AuditSeverity
+DebatePhase
+JournalEntryType
+MessageType
+ReflectionDepth
+SpecialistType
+SynthesisType

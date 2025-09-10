@@ -14,7 +14,7 @@ import traceback
 from agents.base_agent  import BaseAgent
 from agents.stoic_clarifier  import StoicClarifier
 from agents.proponent import ProponentAgent
-from agents.opponent_agent import OpponentAgent
+from agents.opponent import OpponentAgent
 from agents.decider_agent import SynthesizerAgent as DeciderAgent
 from agents.auditor import AuditorAgent
 from agents.journal_assistant import JournalAssistantAgent as JournalingAssistant
@@ -103,25 +103,6 @@ class EchoForgeOrchestrator:
         
         # Load configuration
         self.config = self._load_config()
-        # Add default models if missing
-        if "models" not in self.config:
-            self.config["models"] = {
-                "clarifier": "llama3:8b",
-                "proponent": "llama3:8b", 
-                "opponent": "llama3:8b",
-                "decider": "llama3:8b",
-                "auditor": "gemma:2b",
-                "journaling_assistant": "phi3:mini",
-                "specialist": "llama3:8b"
-            }
-        
-        # Add default agent_settings if missing
-        if "agent_settings" not in self.config:
-            self.config["agent_settings"] = {
-                "temperature": 0.7,
-                "max_tokens": 2048,
-                "timeout": 60
-            }
         
         # Initialize agents
         self.agents: Dict[AgentRole, BaseAgent] = {}

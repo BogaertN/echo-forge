@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import json
 
-from .base_agent import BaseAgent, ConversationMessage, AgentResponse, AgentConfig
-from ..models import DebatePhase, MessageType, SynthesisType
-from ..utils import extract_key_concepts, calculate_similarity, clean_text
+from agents.base_agent import BaseAgent, ConversationMessage, AgentResponse, AgentConfig
+from models import DebatePhase, MessageType, SynthesisType
+from utils import extract_key_concepts, calculate_similarity, clean_text
 
 logger = logging.getLogger(__name__)
 

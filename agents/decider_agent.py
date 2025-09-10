@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import json
 
-from .base_agent import BaseAgent, ConversationMessage, AgentResponse, AgentConfig
+from agents.base_agent import BaseAgent, ConversationMessage, AgentResponse, AgentConfig
 from models import DebatePhase, MessageType, SynthesisType
 from utils import extract_key_concepts, calculate_similarity, clean_text
 
@@ -70,8 +70,24 @@ class SynthesizerAgent(BaseAgent):
     the strongest elements from different positions.
     """
 
-    def __init__(self, config: Optional[AgentConfig] = None):
-        super().__init__(config)
+    def __init__(self, **kwargs):
+        # Default configuration optimized for synthesis
+        default_config = AgentConfig(
+            model="qwen2:1.5b",   # Balanced model for synthesis
+            temperature=0.7,      # Balanced creativity and consistency
+            max_tokens=1024,      # Room for detailed synthesis
+            timeout=90,           # More time for complex reasoning
+            enable_tools=False,   # Pure reasoning for synthesis
+            enable_memory=True,
+            memory_limit=30       # Remember extensive debate context
+        )
+        
+        # Merge with provided config
+        config = default_config.__dict__.copy()
+        config.update(kwargs)
+        final_config = AgentConfig(**config)
+        
+        super().__init__(final_config)
         self.agent_role = "synthesizer"
         self.synthesis_approaches = [
             "dialectical",  # Thesis + antithesis → synthesis
@@ -984,3 +1000,52 @@ class SynthesizerAgent(BaseAgent):
         """Clean up agent resources."""
         await super().cleanup()
         logger.info(f"SynthesizerAgent {self.session_id} cleaned up successfully")
+
+    def get_system_prompt(self) -> str:
+        """Get the system prompt for the synthesizer agent."""
+        return """You are a synthesizer agent in a structured debate. Your role is to:
+        1. Find common ground between opposing arguments
+        2. Identify shared values and compatible goals
+        3. Synthesize different perspectives into a balanced view
+        4. Help bridge differences and create consensus
+        5. Provide nuanced analysis that incorporates multiple viewpoints
+        
+        Be objective, balanced, and focus on integration rather than taking sides."""
+
+    async def process_request(self, request: str, context: Dict[str, Any] = None) -> AgentResponse:
+        """Process a request and generate a synthesis response."""
+        try:
+            if context is None:
+                context = {}
+            
+            # Build the prompt for synthesis
+            prompt = f"""
+            Context: You need to synthesize the following debate positions.
+            
+            Debate Content: {request}
+            
+            Your task: Find common ground and create a balanced synthesis that incorporates
+            the strongest elements from different perspectives. Look for shared values,
+            compatible goals, and areas where different viewpoints can coexist.
+            """
+            
+            # Get response from LLM
+            response = await self._get_llm_response(prompt, context)
+            
+            return AgentResponse(
+                agent_id=self.agent_id,
+                content=response,
+                metadata={
+                    "agent_type": "synthesizer",
+                    "timestamp": datetime.now().isoformat(),
+                    "context": context
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in synthesizer agent request processing: {e}")
+            return AgentResponse(
+                agent_id=self.agent_id,
+                content="I encountered an error while generating the synthesis.",
+                metadata={"error": str(e)}
+            )

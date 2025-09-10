@@ -21,9 +21,9 @@ from datetime import datetime
 import json
 import re
 
-from .base_agent import BaseAgent, ConversationMessage, AgentResponse, AgentConfig
-from ..models import DebatePhase, MessageType, AuditSeverity
-from ..utils import extract_key_concepts, calculate_similarity, clean_text
+from agents.base_agent import BaseAgent, ConversationMessage, AgentResponse, AgentConfig
+from models import DebatePhase, MessageType, AuditSeverity
+from utils import extract_key_concepts, calculate_similarity, clean_text
 
 logger = logging.getLogger(__name__)
 
@@ -1082,3 +1082,109 @@ Confidence: {audit_report.confidence_score:.1f}/10
         """Clean up agent resources."""
         await super().cleanup()
         logger.info(f"AuditorAgent {self.session_id} cleaned up successfully")
+
+    def get_system_prompt(self) -> str:
+        """Get the system prompt for the auditor agent."""
+        return """You are an auditor agent in a structured debate. Your role is to:
+        1. Identify logical fallacies and reasoning errors
+        2. Assess the quality and credibility of evidence presented
+        3. Check for inconsistencies and contradictions in arguments
+        4. Detect potential bias or emotional manipulation
+        5. Provide objective quality assessment of the debate
+        
+        Be thorough, impartial, and focus on logical rigor and evidence quality."""
+
+    async def process_request(self, request: str, context: Dict[str, Any] = None) -> AgentResponse:
+        """Process a request and generate an audit response."""
+        try:
+            if context is None:
+                context = {}
+            
+            # Build the prompt for auditing
+            prompt = f"""
+            Context: You need to audit the following debate content for quality and logical rigor.
+            
+            Content to Audit: {request}
+            
+            Your task: Analyze this content for:
+            - Logical fallacies or reasoning errors
+            - Quality and credibility of evidence
+            - Inconsistencies or contradictions
+            - Potential bias or emotional manipulation
+            
+            Provide a balanced assessment with specific examples.
+            """
+            
+            # Get response from LLM
+            response = await self._get_llm_response(prompt, context)
+            
+            return AgentResponse(
+                agent_id=self.agent_id,
+                content=response,
+                metadata={
+                    "agent_type": "auditor",
+                    "timestamp": datetime.now().isoformat(),
+                    "context": context
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in auditor agent request processing: {e}")
+            return AgentResponse(
+                agent_id=self.agent_id,
+                content="I encountered an error while performing the audit.",
+                metadata={"error": str(e)}
+            )
+
+    def get_system_prompt(self) -> str:
+        """Get the system prompt for the auditor agent."""
+        return """You are an auditor agent in a structured debate. Your role is to:
+        1. Identify logical fallacies and reasoning errors
+        2. Assess the quality and credibility of evidence presented
+        3. Check for inconsistencies and contradictions in arguments
+        4. Detect potential bias or emotional manipulation
+        5. Provide objective quality assessment of the debate
+        
+        Be thorough, impartial, and focus on logical rigor and evidence quality."""
+
+    async def process_request(self, request: str, context: Dict[str, Any] = None) -> AgentResponse:
+        """Process a request and generate an audit response."""
+        try:
+            if context is None:
+                context = {}
+            
+            # Build the prompt for auditing
+            prompt = f"""
+            Context: You need to audit the following debate content for quality and logical rigor.
+            
+            Content to Audit: {request}
+            
+            Your task: Analyze this content for:
+            - Logical fallacies or reasoning errors
+            - Quality and credibility of evidence
+            - Inconsistencies or contradictions
+            - Potential bias or emotional manipulation
+            
+            Provide a balanced assessment with specific examples.
+            """
+            
+            # Get response from LLM
+            response = await self._get_llm_response(prompt, context)
+            
+            return AgentResponse(
+                agent_id=self.agent_id,
+                content=response,
+                metadata={
+                    "agent_type": "auditor",
+                    "timestamp": datetime.now().isoformat(),
+                    "context": context
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in auditor agent request processing: {e}")
+            return AgentResponse(
+                agent_id=self.agent_id,
+                content="I encountered an error while performing the audit.",
+                metadata={"error": str(e)}
+            )

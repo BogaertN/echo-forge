@@ -280,7 +280,7 @@ class ConnectionManager:
         self.health_check_task: Optional[asyncio.Task] = None
         
         # Start background tasks
-        self._start_background_tasks()
+        # self._start_background_tasks()  # Delay until server starts
         
         logger.info("ConnectionManager initialized")
     
