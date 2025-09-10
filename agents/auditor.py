@@ -113,8 +113,24 @@ class AuditorAgent(BaseAgent):
     feedback for improving debate quality and critical thinking.
     """
 
-    def __init__(self, config: Optional[AgentConfig] = None):
-        super().__init__(config)
+    def __init__(self, **kwargs):
+        # Default configuration optimized for auditing
+        default_config = AgentConfig(
+            model="tinyllama:1.1b",  # Lightweight model for quick checks
+            temperature=0.5,         # Lower temperature for consistency
+            max_tokens=512,          # Shorter responses for auditing
+            timeout=60,              # Quick turnaround for audits
+            enable_tools=False,      # Pure reasoning for auditing
+            enable_memory=True,
+            memory_limit=20          # Focused audit context
+        )
+        
+        # Merge with provided config
+        config = default_config.__dict__.copy()
+        config.update(kwargs)
+        final_config = AgentConfig(**config)
+        
+        super().__init__(final_config)
         self.agent_role = "auditor"
         
         # Comprehensive fallacy taxonomy

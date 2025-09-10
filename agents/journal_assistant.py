@@ -87,8 +87,24 @@ class JournalAssistantAgent(BaseAgent):
     structured reflection and supportive guidance.
     """
 
-    def __init__(self, config: Optional[AgentConfig] = None):
-        super().__init__(config)
+    def __init__(self, **kwargs):
+        # Default configuration optimized for journaling
+        default_config = AgentConfig(
+            model="tinyllama:1.1b",  # Lightweight model for journaling
+            temperature=0.6,         # Slightly creative for reflection
+            max_tokens=512,          # Moderate length for journal prompts
+            timeout=60,              # Quick turnaround for journaling
+            enable_tools=False,      # Pure reasoning for reflection
+            enable_memory=True,
+            memory_limit=20          # Focused journaling context
+        )
+        
+        # Merge with provided config
+        config = default_config.__dict__.copy()
+        config.update(kwargs)
+        final_config = AgentConfig(**config)
+        
+        super().__init__(final_config)
         self.agent_role = "journal_assistant"
         
         # Reflection prompt categories
@@ -779,3 +795,56 @@ It was a valuable opportunity for learning and growth.
         """Clean up agent resources."""
         await super().cleanup()
         logger.info(f"JournalAssistantAgent {self.session_id} cleaned up successfully")
+
+    def get_system_prompt(self) -> str:
+        """Get the system prompt for the journal assistant agent."""
+        return """You are a journal assistant agent. Your role is to:
+        1. Help users reflect on their debate experiences
+        2. Extract meaningful insights and learning outcomes
+        3. Generate thoughtful questions for self-reflection
+        4. Assist with organizing thoughts and experiences
+        5. Support personal growth through guided journaling
+        
+        Be supportive, insightful, and focus on helping users learn from their experiences."""
+
+    async def process_request(self, request: str, context: Dict[str, Any] = None) -> AgentResponse:
+        """Process a request and generate a journal assistant response."""
+        try:
+            if context is None:
+                context = {}
+            
+            # Build the prompt for journaling assistance
+            prompt = f"""
+            Context: You are helping a user reflect on their debate experience.
+            
+            User's Experience: {request}
+            
+            Your task: Help the user reflect on this experience by:
+            - Identifying key insights and learning moments
+            - Asking thoughtful follow-up questions
+            - Helping organize their thoughts
+            - Supporting their personal growth journey
+            
+            Be supportive and encouraging while helping them think deeply.
+            """
+            
+            # Get response from LLM
+            response = await self._get_llm_response(prompt, context)
+            
+            return AgentResponse(
+                agent_id=self.agent_id,
+                content=response,
+                metadata={
+                    "agent_type": "journal_assistant",
+                    "timestamp": datetime.now().isoformat(),
+                    "context": context
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in journal assistant request processing: {e}")
+            return AgentResponse(
+                agent_id=self.agent_id,
+                content="I encountered an error while helping with your reflection.",
+                metadata={"error": str(e)}
+            )

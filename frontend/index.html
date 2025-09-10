@@ -3,174 +3,1127 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EchoForge - Private AI Reasoning Platform</title>
-    <link rel="stylesheet" href="/static/css/main.css">
-    <!-- Accessibility: ARIA roles and keyboard navigation supported -->
+    <title>EchoForge - Multi-Agent Debate Platform</title>
+    <link rel="icon" type="image/x-icon" href="/static/images/favicon.ico">
+    
+    <!-- CSS Styles -->
+    <style>
+        /* CSS Variables for Consistent Theming */
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --success-color: #27ae60;
+            --warning-color: #f39c12;
+            --danger-color: #e74c3c;
+            --info-color: #17a2b8;
+            --light-color: #f8f9fa;
+            --dark-color: #343a40;
+            --border-color: #dee2e6;
+            --shadow: 0 2px 4px rgba(0,0,0,0.1);
+            --border-radius: 8px;
+            --transition: all 0.3s ease;
+        }
+
+        /* Global Styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--dark-color);
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+        }
+
+        /* Header Styles */
+        .header {
+            background: white;
+            box-shadow: var(--shadow);
+            padding: 1rem 0;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+        }
+
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .logo h1 {
+            color: var(--primary-color);
+            font-size: 1.8rem;
+            font-weight: 700;
+        }
+
+        .logo-icon {
+            width: 32px;
+            height: 32px;
+            background: var(--secondary-color);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+
+        .nav-buttons {
+            display: flex;
+            gap: 1rem;
+        }
+
+        /* Main Layout */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 2rem;
+            min-height: calc(100vh - 120px);
+        }
+
+        .main-content {
+            background: white;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            padding: 2rem;
+        }
+
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        /* Card Styles */
+        .card {
+            background: white;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            padding: 1.5rem;
+        }
+
+        .card-header {
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .card-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+
+        /* Button Styles */
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            text-decoration: none;
+            font-weight: 500;
+            transition: var(--transition);
+            text-align: center;
+        }
+
+        .btn-primary {
+            background: var(--secondary-color);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #2980b9;
+            transform: translateY(-1px);
+        }
+
+        .btn-success {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .btn-warning {
+            background: var(--warning-color);
+            color: white;
+        }
+
+        .btn-danger {
+            background: var(--danger-color);
+            color: white;
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 2px solid var(--secondary-color);
+            color: var(--secondary-color);
+        }
+
+        .btn-outline:hover {
+            background: var(--secondary-color);
+            color: white;
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* Form Styles */
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: var(--primary-color);
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+            font-size: 1rem;
+            transition: var(--transition);
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--secondary-color);
+            box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+        }
+
+        .form-textarea {
+            resize: vertical;
+            min-height: 120px;
+        }
+
+        /* Status Indicators */
+        .status {
+            padding: 1rem;
+            border-radius: var(--border-radius);
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-connecting {
+            background: #e8f4f8;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+
+        .status-connected {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+
+        .status-error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+
+        .status-warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+        }
+
+        /* Debate Interface */
+        .debate-container {
+            display: none;
+        }
+
+        .debate-container.active {
+            display: block;
+        }
+
+        .debate-phase {
+            background: var(--light-color);
+            padding: 1rem;
+            border-radius: var(--border-radius);
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+
+        .phase-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+
+        .phase-description {
+            color: #6c757d;
+            margin-top: 0.5rem;
+        }
+
+        .message-container {
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+            padding: 1rem;
+            margin-bottom: 1rem;
+            background: #fafafa;
+        }
+
+        .message {
+            margin-bottom: 1.5rem;
+            padding: 1rem;
+            border-radius: var(--border-radius);
+            animation: fadeInUp 0.3s ease;
+        }
+
+        .message.user {
+            background: var(--secondary-color);
+            color: white;
+            margin-left: 2rem;
+        }
+
+        .message.agent {
+            background: white;
+            border: 1px solid var(--border-color);
+            margin-right: 2rem;
+        }
+
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .message-author {
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .message-time {
+            font-size: 0.8rem;
+            opacity: 0.7;
+        }
+
+        .message-content {
+            line-height: 1.6;
+        }
+
+        /* Response Area */
+        .response-area {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+        }
+
+        .response-input {
+            flex: 1;
+        }
+
+        /* Sidebar Components */
+        .progress-bar {
+            background: var(--light-color);
+            border-radius: 10px;
+            height: 10px;
+            overflow: hidden;
+            margin-bottom: 0.5rem;
+        }
+
+        .progress-fill {
+            background: var(--secondary-color);
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+
+        .participant-list {
+            list-style: none;
+        }
+
+        .participant {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem;
+            border-radius: var(--border-radius);
+            margin-bottom: 0.5rem;
+        }
+
+        .participant.active {
+            background: var(--light-color);
+        }
+
+        .participant-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ccc;
+        }
+
+        .participant-indicator.online {
+            background: var(--success-color);
+        }
+
+        .participant-indicator.thinking {
+            background: var(--warning-color);
+            animation: pulse 1s infinite;
+        }
+
+        /* Animations */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .spinner {
+            border: 3px solid var(--light-color);
+            border-top: 3px solid var(--secondary-color);
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .sidebar {
+                order: -1;
+            }
+            
+            .header-content {
+                flex-direction: column;
+                gap: 1rem;
+            }
+            
+            .nav-buttons {
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+            
+            .response-area {
+                flex-direction: column;
+            }
+        }
+
+        /* Utility Classes */
+        .text-center { text-align: center; }
+        .text-muted { color: #6c757d; }
+        .mb-2 { margin-bottom: 1rem; }
+        .mt-2 { margin-top: 1rem; }
+        .hidden { display: none; }
+        .flex { display: flex; }
+        .gap-1 { gap: 0.5rem; }
+        .gap-2 { gap: 1rem; }
+        .justify-between { justify-content: space-between; }
+        .items-center { align-items: center; }
+
+        /* Welcome Screen */
+        .welcome-screen {
+            text-align: center;
+            padding: 3rem 0;
+        }
+
+        .welcome-title {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--primary-color);
+            margin-bottom: 1rem;
+        }
+
+        .welcome-subtitle {
+            font-size: 1.2rem;
+            color: #6c757d;
+            margin-bottom: 2rem;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin: 3rem 0;
+        }
+
+        .feature-card {
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .feature-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+
+        .feature-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .feature-description {
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+    </style>
 </head>
 <body>
-    <header role="banner">
-        <h1>EchoForge</h1>
-        <nav role="navigation">
-            <ul>
-                <li><a href="#clarification">Clarify Question</a></li>
-                <li><a href="#debate">Start Debate</a></li>
-                <li><a href="#journal">Journal</a></li>
-                <li><a href="#resonance">Resonance Map</a></li>
-                <li><a href="#dashboard">Dashboard</a></li>
-                <li><a href="#settings">Settings</a></li>
-            </ul>
-        </nav>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <div class="logo-icon">E</div>
+                <h1>EchoForge</h1>
+            </div>
+            <nav class="nav-buttons">
+                <button class="btn btn-outline" onclick="showJournal()">Journal</button>
+                <button class="btn btn-outline" onclick="showResonanceMap()">Resonance Map</button>
+                <button class="btn btn-outline" onclick="showSettings()">Settings</button>
+                <button class="btn btn-primary" onclick="startNewDebate()">New Debate</button>
+            </nav>
+        </div>
     </header>
 
-    <main role="main">
-        <!-- Onboarding Modal -->
-        <div id="onboarding" class="modal" aria-hidden="true">
-            <div class="modal-content">
-                <h2>Welcome to EchoForge</h2>
-                <p>Your private platform for reasoning and reflection.</p>
-                <ol>
-                    <li>Clarify your question using Stoic Mode.</li>
-                    <li>Start a multi-agent debate.</li>
-                    <li>Synthesize insights and journal them.</li>
-                    <li>Explore your resonance map.</li>
-                </ol>
-                <button onclick="closeOnboarding()">Get Started</button>
-            </div>
+    <!-- Main Container -->
+    <div class="container">
+        <div class="main-grid">
+            <!-- Main Content Area -->
+            <main class="main-content">
+                <!-- Connection Status -->
+                <div id="connectionStatus" class="status status-connecting">
+                    <div class="spinner"></div>
+                    <span>Connecting to EchoForge...</span>
+                </div>
+
+                <!-- Welcome Screen -->
+                <div id="welcomeScreen" class="welcome-screen">
+                    <h2 class="welcome-title">Welcome to EchoForge</h2>
+                    <p class="welcome-subtitle">Privacy-First Multi-Agent Debate Platform</p>
+                    
+                    <div class="features-grid">
+                        <div class="feature-card card">
+                            <div class="feature-icon">🧠</div>
+                            <h3 class="feature-title">Socratic Clarification</h3>
+                            <p class="feature-description">AI-guided questioning to refine and deepen your thoughts through systematic inquiry.</p>
+                        </div>
+                        <div class="feature-card card">
+                            <div class="feature-icon">⚖️</div>
+                            <h3 class="feature-title">Multi-Agent Debate</h3>
+                            <p class="feature-description">Structured debates between specialized AI agents presenting different perspectives.</p>
+                        </div>
+                        <div class="feature-card card">
+                            <div class="feature-icon">🎯</div>
+                            <h3 class="feature-title">Expert Specialists</h3>
+                            <p class="feature-description">Domain experts in science, ethics, economics, history, and law provide contextual insights.</p>
+                        </div>
+                        <div class="feature-card card">
+                            <div class="feature-icon">📝</div>
+                            <h3 class="feature-title">Reflective Journaling</h3>
+                            <p class="feature-description">Guided reflection and insight extraction to consolidate learning and growth.</p>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="initialQuestion">What would you like to explore today?</label>
+                        <textarea 
+                            id="initialQuestion" 
+                            class="form-input form-textarea" 
+                            placeholder="Enter a question, topic, or idea you'd like to explore through structured debate and reflection..."
+                            rows="4"
+                        ></textarea>
+                    </div>
+                    
+                    <button class="btn btn-primary" onclick="beginDebate()" style="font-size: 1.1rem; padding: 1rem 2rem;">
+                        Begin Exploration
+                    </button>
+                </div>
+
+                <!-- Debate Interface -->
+                <div id="debateContainer" class="debate-container">
+                    <!-- Debate Phase Indicator -->
+                    <div id="debatePhase" class="debate-phase">
+                        <div class="phase-title">Initializing...</div>
+                        <div class="phase-description">Setting up your debate session</div>
+                    </div>
+
+                    <!-- Messages Container -->
+                    <div id="messagesContainer" class="message-container">
+                        <!-- Messages will be populated here -->
+                    </div>
+
+                    <!-- Response Area -->
+                    <div id="responseArea" class="response-area hidden">
+                        <input 
+                            type="text" 
+                            id="userResponse" 
+                            class="form-input response-input" 
+                            placeholder="Type your response..."
+                            onkeypress="handleKeyPress(event)"
+                        >
+                        <button class="btn btn-primary" onclick="sendResponse()">Send</button>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <!-- Session Info -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Session Info</h3>
+                    </div>
+                    <div id="sessionInfo">
+                        <p class="text-muted">No active session</p>
+                    </div>
+                </div>
+
+                <!-- Participants -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Participants</h3>
+                    </div>
+                    <ul id="participantsList" class="participant-list">
+                        <li class="participant">
+                            <div class="participant-indicator"></div>
+                            <span>You</span>
+                        </li>
+                    </ul>
+                </div>
+
+                <!-- Progress -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Progress</h3>
+                    </div>
+                    <div id="progressInfo">
+                        <div class="mb-2">
+                            <small class="text-muted">Debate Progress</small>
+                            <div class="progress-bar">
+                                <div id="debateProgress" class="progress-fill" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div id="progressText" class="text-muted">
+                            Ready to begin
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick Actions -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Quick Actions</h3>
+                    </div>
+                    <div class="flex flex-col gap-1">
+                        <button class="btn btn-outline" onclick="requestSpecialist()" id="specialistBtn" disabled>
+                            Request Specialist
+                        </button>
+                        <button class="btn btn-outline" onclick="requestSynthesis()" id="synthesisBtn" disabled>
+                            Request Synthesis
+                        </button>
+                        <button class="btn btn-outline" onclick="endDebate()" id="endBtn" disabled>
+                            End Debate
+                        </button>
+                    </div>
+                </div>
+            </aside>
         </div>
+    </div>
 
-        <!-- Core Flows Section -->
-        <section id="clarification">
-            <h2>Clarify Your Question</h2>
-            <form id="clarification-form">
-                <label for="initial-question">Enter your question:</label>
-                <textarea id="initial-question" required></textarea>
-                <button type="submit">Start Clarification</button>
-            </form>
-            <div id="clarification-dialogue" aria-live="polite"></div>
-            <button id="complete-clarification" disabled>Proceed to Debate</button>
-        </section>
-
-        <section id="debate" hidden>
-            <h2>Structured Debate</h2>
-            <p id="clarified-prompt"></p>
-            <form id="debate-config">
-                <label for="rounds">Rounds:</label>
-                <input type="number" id="rounds" value="3" min="1" max="10">
-                
-                <label for="tone">Synthesis Tone:</label>
-                <select id="tone">
-                    <option value="neutral">Neutral</option>
-                    <option value="optimistic">Optimistic</option>
-                    <option value="cautious">Cautious</option>
-                    <option value="skeptical">Skeptical</option>
-                </select>
-                
-                <fieldset>
-                    <legend>Specialists:</legend>
-                    <input type="checkbox" id="ethics" value="ethics"><label for="ethics">Ethics</label>
-                    <input type="checkbox" id="statistics" value="statistics"><label for="statistics">Statistics</label>
-                    <input type="checkbox" id="creativity" value="creativity"><label for="creativity">Creativity</label>
-                    <input type="checkbox" id="technical" value="technical"><label for="technical">Technical</label>
-                </fieldset>
-                
-                <input type="checkbox" id="enable-tools"><label for="enable-tools">Enable Tools (Web Search, etc.)</label>
-                
-                <button type="submit">Start Debate</button>
-            </form>
-            <div id="debate-transcript" aria-live="polite">
-                <!-- Debate rounds appear here -->
-            </div>
-            <button id="synthesize" disabled>Synthesize</button>
-            <div id="synthesis"></div>
-            <button id="journal-synthesis" disabled>Journal This</button>
-            <label>
-                <input type="checkbox" id="show-reasoning" checked>
-                Show Reasoning
-            </label>
-        </section>
-
-        <section id="journal">
-            <h2>Personal Journal</h2>
-            <form id="journal-form">
-                <label for="journal-content">Entry Content:</label>
-                <textarea id="journal-content" required></textarea>
-                <button type="submit">Save Entry</button>
-            </form>
-            <div id="voice-journal">
-                <input type="file" id="voice-upload" accept="audio/*">
-                <button onclick="transcribeVoice()">Transcribe Voice</button>
-            </div>
-            <div id="journal-entries">
-                <!-- Searchable list -->
-                <input type="search" id="journal-search" placeholder="Search entries...">
-                <ul id="entry-list" role="list"></ul>
-            </div>
-        </section>
-
-        <section id="resonance">
-            <h2>Resonance Map</h2>
-            <div id="resonance-map" role="img" aria-label="Resonance map visualization">
-                <!-- Canvas or SVG for graph -->
-                <canvas id="map-canvas"></canvas>
-            </div>
-            <button onclick="exportMap()">Export Map</button>
-            <div id="ghost-loops">
-                <h3>Open Ghost Loops</h3>
-                <ul></ul>
-            </div>
-        </section>
-
-        <section id="dashboard">
-            <h2>Progress Dashboard</h2>
-            <div id="gamification-stats">
-                <!-- Streaks, badges, metrics -->
-            </div>
-        </section>
-
-        <section id="settings">
-            <h2>Settings</h2>
-            <form id="settings-form">
-                <label for="db-passphrase">DB Passphrase:</label>
-                <input type="password" id="db-passphrase">
-                <button type="button" onclick="changePassphrase()">Change</button>
-                
-                <fieldset>
-                    <legend>Privacy</legend>
-                    <input type="checkbox" id="local-only" checked><label for="local-only">Local-Only Mode</label>
-                </fieldset>
-                
-                <button type="button" onclick="backupData()">Backup Data</button>
-                <button type="button" onclick="restoreData()">Restore Data</button>
-            </form>
-        </section>
-    </main>
-
-    <footer role="contentinfo">
-        <p>EchoForge v1.0 &copy; 2025 AI.Web Inc.</p>
-        <a href="#help">Help & Documentation</a>
-    </footer>
-
-    <!-- Scripts -->
-    <script src="/static/js/main.js"></script>
-    <script src="/static/js/websocket.js"></script>
-    <script src="/static/js/debate.js"></script>
-    <script src="/static/js/journal.js"></script>
-
+    <!-- JavaScript Application -->
     <script>
-        // Initial onboarding check
-        if (!localStorage.getItem('onboarded')) {
-            document.getElementById('onboarding').setAttribute('aria-hidden', 'false');
-            document.getElementById('onboarding').style.display = 'block';
+        class EchoForgeApp {
+            constructor() {
+                this.ws = null;
+                this.sessionId = "session_" + Math.random().toString(36).substr(2, 9);
+                this.isConnected = false;
+                this.currentPhase = 'none';
+                this.participants = new Map();
+                this.messageHistory = [];
+                
+                this.init();
+            }
+
+            async init() {
+                await this.connectWebSocket();
+                this.setupEventListeners();
+                this.updateConnectionStatus('connected', 'Connected to EchoForge');
+            }
+
+            async connectWebSocket() {
+                try {
+                    // Generate session ID if not exists
+                    if (!this.sessionId) {
+                        this.sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
+                    }
+                    
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${protocol}//${window.location.host}/ws/${this.sessionId}`;
+                    
+                    this.ws = new WebSocket(wsUrl);
+                    
+                    this.ws.onopen = () => {
+                        this.isConnected = true;
+                        this.updateConnectionStatus('connected', '✓ Connected to EchoForge');
+                    };
+                    
+                    this.ws.onmessage = (event) => {
+                        this.handleMessage(JSON.parse(event.data));
+                    };
+                    
+                    this.ws.onclose = () => {
+                        this.isConnected = false;
+                        this.updateConnectionStatus('error', '⚠ Connection lost. Attempting to reconnect...');
+                        setTimeout(() => this.connectWebSocket(), 3000);
+                    };
+                    
+                    this.ws.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        this.updateConnectionStatus('error', '❌ Connection failed');
+                    };
+                    
+                } catch (error) {
+                    console.error('Failed to connect:', error);
+                    this.updateConnectionStatus('error', '❌ Unable to connect to server');
+                }
+            }
+
+            setupEventListeners() {
+                // Handle enter key in response input
+                document.getElementById('userResponse').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        this.sendResponse();
+                    }
+                });
+
+                // Handle enter key in initial question
+                document.getElementById('initialQuestion').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter' && e.ctrlKey) {
+                        e.preventDefault();
+                        this.beginDebate();
+                    }
+                });
+            }
+
+            updateConnectionStatus(type, message) {
+                const statusElement = document.getElementById('connectionStatus');
+                statusElement.className = `status status-${type}`;
+                statusElement.innerHTML = type === 'connecting' ? 
+                    '<div class="spinner"></div><span>' + message + '</span>' : 
+                    '<span>' + message + '</span>';
+            }
+
+            handleMessage(data) {
+                console.log('Received message:', data);
+                
+                switch (data.type) {
+                    case 'session_started':
+                        this.handleSessionStarted(data);
+                        break;
+                    case 'phase_change':
+                        this.handlePhaseChange(data);
+                        break;
+                    case 'agent_response':
+                        this.handleAgentResponse(data);
+                        break;
+                    case 'debate_complete':
+                        this.handleDebateComplete(data);
+                        break;
+                    case 'participant_update':
+                        this.handleParticipantUpdate(data);
+                        break;
+                    case 'error':
+                        this.handleError(data);
+                        break;
+                    default:
+                        console.log('Unknown message type:', data.type);
+                }
+            }
+
+            handleSessionStarted(data) {
+                this.sessionId = data.session_id;
+                this.showDebateInterface();
+                this.updateSessionInfo(data.question);
+                this.updatePhase('clarification', 'Socratic Clarification', 'The AI will help clarify and refine your question');
+                this.enableButtons(true);
+            }
+
+            handlePhaseChange(data) {
+                this.currentPhase = data.phase;
+                this.updatePhase(data.phase, data.title, data.description);
+                this.updateProgress(data.progress || 0);
+            }
+
+            handleAgentResponse(data) {
+                this.addMessage(data.agent, data.content, data.metadata);
+                this.updateParticipantStatus(data.agent, 'online');
+                
+                // Show response area if expecting user input
+                if (data.expects_response) {
+                    this.showResponseArea(true);
+                }
+            }
+
+            handleDebateComplete(data) {
+                this.updatePhase('complete', 'Debate Complete', 'Ready for journaling and reflection');
+                this.showResponseArea(false);
+                this.updateProgress(100);
+                
+                // Add completion message
+                this.addMessage('system', 'Debate completed! You can now review the conversation, save insights to your journal, or start a new debate.', {
+                    type: 'completion'
+                });
+            }
+
+            handleParticipantUpdate(data) {
+                this.updateParticipantStatus(data.participant, data.status);
+            }
+
+            handleError(data) {
+                console.error('Server error:', data);
+                this.addMessage('system', `Error: ${data.message}`, { type: 'error' });
+            }
+
+            beginDebate() {
+                const question = document.getElementById('initialQuestion').value.trim();
+                if (!question) {
+                    alert('Please enter a question or topic to explore.');
+                    return;
+                }
+
+                if (!this.isConnected) {
+                    alert('Not connected to server. Please wait for connection.');
+                    return;
+                }
+
+                this.sendMessage({
+                    type: 'start_debate',
+                    question: question,
+                    config: {
+                        max_rounds: 8,
+                        enable_specialists: true,
+                        enable_synthesis: true
+                    }
+                });
+            }
+
+            sendResponse() {
+                const input = document.getElementById('userResponse');
+                const content = input.value.trim();
+                
+                if (!content) return;
+
+                this.addMessage('user', content);
+                this.sendMessage({
+                    type: 'user_response',
+                    content: content,
+                    session_id: this.sessionId
+                });
+
+                input.value = '';
+                this.showResponseArea(false);
+            }
+
+            sendMessage(data) {
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify(data));
+                } else {
+                    console.error('WebSocket not connected');
+                }
+            }
+
+            addMessage(author, content, metadata = {}) {
+                const messagesContainer = document.getElementById('messagesContainer');
+                const messageElement = document.createElement('div');
+                
+                const isUser = author === 'user';
+                const agentDisplayName = this.getAgentDisplayName(author);
+                
+                messageElement.className = `message ${isUser ? 'user' : 'agent'}`;
+                messageElement.innerHTML = `
+                    <div class="message-header">
+                        <span class="message-author">${agentDisplayName}</span>
+                        <span class="message-time">${new Date().toLocaleTimeString()}</span>
+                    </div>
+                    <div class="message-content">${this.formatMessageContent(content)}</div>
+                `;
+                
+                messagesContainer.appendChild(messageElement);
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                
+                this.messageHistory.push({ author, content, timestamp: Date.now(), metadata });
+            }
+
+            formatMessageContent(content) {
+                // Basic formatting for message content
+                return content
+                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                    .replace(/\n/g, '<br>');
+            }
+
+            getAgentDisplayName(agent) {
+                const displayNames = {
+                    'user': 'You',
+                    'clarifier': 'Socratic Guide',
+                    'proponent': 'Proponent',
+                    'opponent': 'Opponent',
+                    'synthesizer': 'Synthesizer',
+                    'auditor': 'Quality Auditor',
+                    'journal_assistant': 'Journal Assistant',
+                    'science': 'Science Expert',
+                    'ethics': 'Ethics Expert',
+                    'economics': 'Economics Expert',
+                    'history': 'History Expert',
+                    'legal': 'Legal Expert',
+                    'system': 'System'
+                };
+                return displayNames[agent] || agent.charAt(0).toUpperCase() + agent.slice(1);
+            }
+
+            showDebateInterface() {
+                document.getElementById('welcomeScreen').style.display = 'none';
+                document.getElementById('debateContainer').classList.add('active');
+            }
+
+            showResponseArea(show) {
+                const responseArea = document.getElementById('responseArea');
+                if (show) {
+                    responseArea.classList.remove('hidden');
+                    document.getElementById('userResponse').focus();
+                } else {
+                    responseArea.classList.add('hidden');
+                }
+            }
+
+            updatePhase(phase, title, description) {
+                document.getElementById('debatePhase').innerHTML = `
+                    <div class="phase-title">${title}</div>
+                    <div class="phase-description">${description}</div>
+                `;
+            }
+
+            updateProgress(percentage) {
+                document.getElementById('debateProgress').style.width = `${percentage}%`;
+                
+                const phaseNames = {
+                    'clarification': 'Clarifying question',
+                    'opening': 'Opening statements', 
+                    'debate': 'Main debate',
+                    'specialists': 'Expert consultation',
+                    'synthesis': 'Finding synthesis',
+                    'audit': 'Quality review',
+                    'journaling': 'Reflection',
+                    'complete': 'Complete'
+                };
+                
+                document.getElementById('progressText').textContent = 
+                    phaseNames[this.currentPhase] || 'In progress';
+            }
+
+            updateSessionInfo(question) {
+                document.getElementById('sessionInfo').innerHTML = `
+                    <div><strong>Question:</strong></div>
+                    <div class="text-muted mb-2">${question}</div>
+                    <div><strong>Session ID:</strong> ${this.sessionId}</div>
+                    <div><strong>Started:</strong> ${new Date().toLocaleTimeString()}</div>
+                `;
+            }
+
+            updateParticipantStatus(participant, status) {
+                if (!this.participants.has(participant)) {
+                    this.addParticipant(participant);
+                }
+                
+                const participantElement = document.querySelector(`[data-participant="${participant}"]`);
+                if (participantElement) {
+                    const indicator = participantElement.querySelector('.participant-indicator');
+                    indicator.className = `participant-indicator ${status}`;
+                }
+            }
+
+            addParticipant(participant) {
+                if (this.participants.has(participant)) return;
+                
+                this.participants.set(participant, { status: 'online' });
+                
+                const participantsList = document.getElementById('participantsList');
+                const participantElement = document.createElement('li');
+                participantElement.className = 'participant';
+                participantElement.setAttribute('data-participant', participant);
+                participantElement.innerHTML = `
+                    <div class="participant-indicator online"></div>
+                    <span>${this.getAgentDisplayName(participant)}</span>
+                `;
+                
+                participantsList.appendChild(participantElement);
+            }
+
+            enableButtons(enabled) {
+                document.getElementById('specialistBtn').disabled = !enabled;
+                document.getElementById('synthesisBtn').disabled = !enabled;
+                document.getElementById('endBtn').disabled = !enabled;
+            }
+
+            // Quick Action Functions
+            requestSpecialist() {
+                if (!this.sessionId) return;
+                
+                this.sendMessage({
+                    type: 'request_specialist',
+                    session_id: this.sessionId,
+                    specialist_type: 'auto' // Let system choose
+                });
+            }
+
+            requestSynthesis() {
+                if (!this.sessionId) return;
+                
+                this.sendMessage({
+                    type: 'request_synthesis',
+                    session_id: this.sessionId
+                });
+            }
+
+            endDebate() {
+                if (!this.sessionId) return;
+                
+                if (confirm('Are you sure you want to end this debate?')) {
+                    this.sendMessage({
+                        type: 'end_debate',
+                        session_id: this.sessionId
+                    });
+                }
+            }
+
+            // Navigation Functions
+            startNewDebate() {
+                if (this.sessionId && confirm('This will end your current debate. Continue?')) {
+                    this.sessionId = "session_" + Math.random().toString(36).substr(2, 9);
+                    document.getElementById('welcomeScreen').style.display = 'block';
+                    document.getElementById('debateContainer').classList.remove('active');
+                    document.getElementById('initialQuestion').value = '';
+                    document.getElementById('messagesContainer').innerHTML = '';
+                    this.enableButtons(false);
+                    this.participants.clear();
+                    document.getElementById('participantsList').innerHTML = `
+                        <li class="participant">
+                            <div class="participant-indicator"></div>
+                            <span>You</span>
+                        </li>
+                    `;
+                } else if (!this.sessionId) {
+                    document.getElementById('welcomeScreen').style.display = 'block';
+                    document.getElementById('debateContainer').classList.remove('active');
+                }
+            }
+
+            showJournal() {
+                // Placeholder for journal functionality
+                alert('Journal functionality will be implemented in a future update.');
+            }
+
+            showResonanceMap() {
+                // Placeholder for resonance map functionality
+                alert('Resonance Map functionality will be implemented in a future update.');
+            }
+
+            showSettings() {
+                // Placeholder for settings functionality
+                alert('Settings functionality will be implemented in a future update.');
+            }
         }
 
-        function closeOnboarding() {
-            document.getElementById('onboarding').style.display = 'none';
-            localStorage.setItem('onboarded', 'true');
+        // Global functions for onclick handlers
+        function beginDebate() {
+            app.beginDebate();
         }
 
-        // Accessibility: Keyboard navigation for modals
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') closeOnboarding();
+        function sendResponse() {
+            app.sendResponse();
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendResponse();
+            }
+        }
+
+        function requestSpecialist() {
+            app.requestSpecialist();
+        }
+
+        function requestSynthesis() {
+            app.requestSynthesis();
+        }
+
+        function endDebate() {
+            app.endDebate();
+        }
+
+        function startNewDebate() {
+            app.startNewDebate();
+        }
+
+        function showJournal() {
+            app.showJournal();
+        }
+
+        function showResonanceMap() {
+            app.showResonanceMap();
+        }
+
+        function showSettings() {
+            app.showSettings();
+        }
+
+        // Initialize the application
+        let app;
+        document.addEventListener('DOMContentLoaded', () => {
+            app = new EchoForgeApp();
         });
     </script>
 </body>
