@@ -223,7 +223,7 @@ class EchoForgeOrchestrator:
         for role, template_agent in self.agents.items():
             # Create new instance with isolated context
             session_agents[role] = template_agent.__class__(
-                model=template_agent.model,
+                model=template_agent.config.model,
                 temperature=template_agent.temperature,
                 max_tokens=template_agent.max_tokens,
                 timeout=template_agent.timeout,

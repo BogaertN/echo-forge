@@ -839,12 +839,9 @@
                 }
 
                 this.sendMessage({
-                    type: 'start_debate',
-                    question: question,
-                    config: {
-                        max_rounds: 8,
-                        enable_specialists: true,
-                        enable_synthesis: true
+                    type: 'start_clarification',
+                    payload: {
+                        question: question
                     }
                 });
             }
@@ -857,9 +854,10 @@
 
                 this.addMessage('user', content);
                 this.sendMessage({
-                    type: 'user_response',
-                    content: content,
-                    session_id: this.sessionId
+                    type: 'respond_to_clarification',
+                    payload: {
+                        response: content
+                    }
                 });
 
                 input.value = '';

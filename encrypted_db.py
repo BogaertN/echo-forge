@@ -15,6 +15,10 @@ class EncryptedDatabase:
         """Get database connection."""
         return sqlite3.connect(self.db_path)
     
+    def close(self):
+        """Close database connection."""
+        pass
+    
     def initialize(self):
         """Initialize database."""
         # For now, just ensure the database file exists
@@ -24,3 +28,4 @@ class EncryptedDatabase:
 
 # Backward compatibility
 EncryptedDB = EncryptedDatabase
+
