@@ -1,834 +1,298 @@
-import asyncio
-import json
-import logging
-import time
-import traceback
-from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Tuple, Callable
-from dataclasses import dataclass, field, asdict
+#!/usr/bin/env python3
+"""
+Base agent class for EchoForge.
+Provides common functionality for all AI agents including LLM integration.
+"""
+
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any, List
 from enum import Enum
 import uuid
-import aiohttp
-import re
+import logging
+import asyncio
+from datetime import datetime
 
-from utils import (
-    generate_uuid, performance_monitor, TTLCache, PerformanceTimer,
-    clean_text, count_words, get_logger, handle_exception
-)
-
-logger = get_logger(__name__)
-
-class AgentStatus(Enum):
-    """Agent operational status"""
-    IDLE = "idle"
-    THINKING = "thinking"
-    RESPONDING = "responding"
-    ERROR = "error"
-    OFFLINE = "offline"
-    MAINTENANCE = "maintenance"
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class MessageRole(Enum):
-    """Message roles in conversation"""
-    SYSTEM = "system"
+    """Message roles for conversation tracking."""
     USER = "user"
     ASSISTANT = "assistant"
+    SYSTEM = "system"
 
 @dataclass
 class ConversationMessage:
-    """Individual message in conversation history"""
+    """Represents a single message in a conversation."""
     role: MessageRole
     content: str
-    timestamp: datetime = field(default_factory=datetime.now)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    token_count: Optional[int] = None
+    timestamp: Optional[str] = None
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
-        return {
-            "role": self.role.value,
-            "content": self.content,
-            "timestamp": self.timestamp.isoformat(),
-            "metadata": self.metadata,
-            "token_count": self.token_count
-        }
-
-@dataclass
-class AgentResponse:
-    """Standardized agent response structure"""
-    content: str
-    confidence: float = 0.0
-    reasoning: Optional[str] = None
-    key_points: List[str] = field(default_factory=list)
-    sources: List[Dict[str, Any]] = field(default_factory=list)
-    response_time: float = 0.0
-    token_count: int = 0
-    model_used: str = ""
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
-        return asdict(self)
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now().isoformat()
 
 @dataclass
 class AgentConfig:
-    """Configuration for agent behavior"""
+    """Configuration for AI agents."""
     model: str = "llama3.1:8b"
     temperature: float = 0.7
-    max_tokens: int = 1024
+    max_tokens: int = 2048
     timeout: int = 60
-    max_retries: int = 3
-    retry_delay: float = 1.0
-    context_window: int = 4096
-    system_prompt: str = ""
-    enable_tools: bool = False
-    enable_memory: bool = True
-    memory_limit: int = 100  # Max conversation messages
-    performance_tracking: bool = True
+    session_id: Optional[str] = None  # Fixed: Added session_id parameter
+    tools_enabled: bool = True
+    ollama_base_url: str = "http://localhost:11434"
+    system_prompt_override: Optional[str] = None
+    
+    def __post_init__(self):
+        if self.session_id is None:
+            self.session_id = str(uuid.uuid4())
 
-class OllamaClient:
-    """Asynchronous client for Ollama API communication"""
+@dataclass
+class AgentResponse:
+    """Response from an AI agent."""
+    content: str
+    confidence: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: Optional[str] = None
+    agent_id: Optional[str] = None
     
-    def __init__(self, base_url: str = "http://localhost:11434"):
-        self.base_url = base_url.rstrip('/')
-        self.session: Optional[aiohttp.ClientSession] = None
-        self._model_cache = TTLCache(default_ttl=3600)  # Cache model info for 1 hour
-        
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create HTTP session"""
-        if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=120, connect=10)
-            self.session = aiohttp.ClientSession(
-                timeout=timeout,
-                headers={"Content-Type": "application/json"}
-            )
-        return self.session
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now().isoformat()
+
+class BaseAgent:
+    """Base class for all AI agents in EchoForge."""
     
-    async def health_check(self) -> bool:
-        """Check if Ollama service is available"""
-        try:
-            session = await self._get_session()
-            async with session.get(f"{self.base_url}/api/version") as response:
-                return response.status == 200
-        except Exception as e:
-            logger.warning(f"Ollama health check failed: {e}")
-            return False
-    
-    async def list_models(self) -> List[Dict[str, Any]]:
-        """List available models"""
-        try:
-            # Check cache first
-            cached_models = self._model_cache.get("model_list")
-            if cached_models:
-                return cached_models
-            
-            session = await self._get_session()
-            async with session.get(f"{self.base_url}/api/tags") as response:
-                if response.status == 200:
-                    data = await response.json()
-                    models = data.get("models", [])
-                    
-                    # Cache the result
-                    self._model_cache.set("model_list", models)
-                    return models
-                else:
-                    logger.error(f"Failed to list models: HTTP {response.status}")
-                    return []
-        except Exception as e:
-            logger.error(f"Error listing models: {e}")
-            return []
-    
-    async def check_model_exists(self, model_name: str) -> bool:
-        """Check if specific model exists"""
-        try:
-            models = await self.list_models()
-            return any(model.get("name", "").startswith(model_name) for model in models)
-        except Exception:
-            return False
-    
-    async def pull_model(self, model_name: str) -> bool:
-        """Pull/download a model"""
-        try:
-            session = await self._get_session()
-            payload = {"name": model_name}
-            
-            async with session.post(f"{self.base_url}/api/pull", json=payload) as response:
-                if response.status == 200:
-                    # Stream the pull progress
-                    async for line in response.content:
-                        try:
-                            progress_data = json.loads(line.decode())
-                            if progress_data.get("status") == "success":
-                                logger.info(f"Model {model_name} pulled successfully")
-                                return True
-                        except json.JSONDecodeError:
-                            continue
-                return False
-        except Exception as e:
-            logger.error(f"Error pulling model {model_name}: {e}")
-            return False
-    
-    async def chat_completion(self, 
-                            model: str,
-                            messages: List[Dict[str, str]],
-                            temperature: float = 0.7,
-                            max_tokens: int = 1024,
-                            stream: bool = False) -> Dict[str, Any]:
-        """
-        Send chat completion request to Ollama.
+    def __init__(self, config: Optional[AgentConfig] = None):
+        """Initialize the base agent.
         
         Args:
-            model: Model name
-            messages: Conversation messages
-            temperature: Sampling temperature
-            max_tokens: Maximum tokens to generate
-            stream: Whether to stream response
-            
-        Returns:
-            Response data from Ollama
+            config: Agent configuration. If None, uses default config.
         """
-        try:
-            session = await self._get_session()
-            
-            # Prepare request payload
-            payload = {
-                "model": model,
-                "messages": messages,
-                "stream": stream,
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": max_tokens,
-                }
-            }
-            
-            start_time = time.time()
-            
-            async with session.post(f"{self.base_url}/api/chat", json=payload) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise Exception(f"Ollama API error {response.status}: {error_text}")
-                
-                if stream:
-                    # Handle streaming response
-                    full_content = ""
-                    async for line in response.content:
-                        try:
-                            chunk_data = json.loads(line.decode())
-                            if chunk_data.get("message", {}).get("content"):
-                                full_content += chunk_data["message"]["content"]
-                            if chunk_data.get("done", False):
-                                break
-                        except json.JSONDecodeError:
-                            continue
-                    
-                    return {
-                        "message": {"content": full_content},
-                        "response_time": time.time() - start_time,
-                        "model": model
-                    }
-                else:
-                    # Handle non-streaming response
-                    data = await response.json()
-                    data["response_time"] = time.time() - start_time
-                    return data
-                    
-        except Exception as e:
-            logger.error(f"Chat completion error: {e}")
-            raise
-    
-    async def close(self):
-        """Close the HTTP session"""
-        if self.session and not self.session.closed:
-            await self.session.close()
-
-class BaseAgent(ABC):
-    """
-    Abstract base class for all EchoForge agents.
-    
-    Provides core functionality including:
-    - LLM communication via Ollama
-    - Conversation history management
-    - Session isolation
-    - Performance monitoring
-    - Error handling and recovery
-    """
-    
-    def __init__(self, 
-                 model: str = "llama3.1:8b",
-                 temperature: float = 0.7,
-                 max_tokens: int = 1024,
-                 timeout: int = 60,
-                 session_id: str = None,
-                 agent_id: str = None,
-                 config: AgentConfig = None):
-        
-        # Use provided config or create default
-        if config:
-            self.config = config
-        else:
-            self.config = AgentConfig(
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=timeout
-            )
-        
-        # Agent identification
-        self.agent_id = agent_id or generate_uuid()
-        self.session_id = session_id or generate_uuid()
+        self.config = config or AgentConfig()
+        self.agent_id = str(uuid.uuid4())
+        self.conversation_history: List[ConversationMessage] = []
         self.agent_type = self.__class__.__name__
         
-        # State management
-        self.status = AgentStatus.IDLE
-        self.created_at = datetime.now()
-        self.last_activity = datetime.now()
+        # Set up logging for this agent
+        self.logger = logging.getLogger(f"agents.{self.agent_type.lower()}")
+        self.logger.info(f"Initialized {self.agent_type} agent: {self.agent_id}")
         
-        # Conversation management
-        self.conversation_history: List[ConversationMessage] = []
-        self.context_cache = TTLCache(default_ttl=1800)  # 30 minutes
-        
-        # Performance tracking
-        self.performance_metrics = {
-            "total_requests": 0,
-            "successful_requests": 0,
-            "failed_requests": 0,
-            "total_tokens": 0,
-            "total_response_time": 0.0,
-            "average_response_time": 0.0,
-            "errors": []
-        }
-        
-        # LLM client
-        self.ollama_client = OllamaClient()
-        
-        # Tools interface (can be injected by subclasses)
-        self.tool_manager = None
-        
-        # Initialize system prompt
-        if self.config.system_prompt:
-            self._add_system_message(self.config.system_prompt)
-        
-        logger.info(f"Initialized {self.agent_type} agent: {self.agent_id}")
+    @property
+    def system_prompt(self) -> str:
+        """Default system prompt. Override in subclasses."""
+        if self.config.system_prompt_override:
+            return self.config.system_prompt_override
+        return "You are a helpful AI assistant participating in structured debates and discussions."
     
-    @abstractmethod
-    def get_system_prompt(self) -> str:
-        """Get the system prompt for this agent type"""
-        pass
-    
-    @abstractmethod
-    async def process_request(self, request: str, context: Dict[str, Any] = None) -> AgentResponse:
-        """Process a request and return response"""
-        pass
-    
-    async def initialize(self) -> bool:
-        """
-        Initialize the agent (check model availability, pull if needed).
-        
-        Returns:
-            True if initialization successful
-        """
-        try:
-            # Check Ollama health
-            if not await self.ollama_client.health_check():
-                logger.error("Ollama service is not available")
-                return False
-            
-            # Check if model exists
-            if not await self.ollama_client.check_model_exists(self.config.model):
-                logger.info(f"Model {self.config.model} not found, attempting to pull...")
-                if not await self.ollama_client.pull_model(self.config.model):
-                    logger.error(f"Failed to pull model {self.config.model}")
-                    return False
-            
-            # Set system prompt if not already set
-            if not self.conversation_history and self.get_system_prompt():
-                self._add_system_message(self.get_system_prompt())
-            
-            self.status = AgentStatus.IDLE
-            logger.info(f"Agent {self.agent_id} initialized successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Agent initialization failed: {e}")
-            self.status = AgentStatus.ERROR
-            return False
-    
-    async def chat(self, 
-                  message: str, 
-                  context: Dict[str, Any] = None,
-                  use_tools: bool = None) -> AgentResponse:
-        """
-        Send a chat message to the agent.
+    async def generate_response(self, prompt: str, context: Optional[str] = None, **kwargs) -> AgentResponse:
+        """Generate a response using the configured LLM.
         
         Args:
-            message: User message
-            context: Additional context
-            use_tools: Whether to enable tool usage
+            prompt: The input prompt/question
+            context: Additional context for the response
+            **kwargs: Additional parameters for the LLM
             
         Returns:
-            Agent response
-        """
-        if use_tools is None:
-            use_tools = self.config.enable_tools
-        
-        try:
-            self.status = AgentStatus.THINKING
-            self.last_activity = datetime.now()
-            
-            # Add user message to history
-            self._add_user_message(message)
-            
-            # Generate response
-            with PerformanceTimer(f"{self.agent_type}_chat") as timer:
-                response = await self._generate_response(context, use_tools)
-            
-            # Update performance metrics
-            self._update_performance_metrics(timer.duration, len(response.content.split()), True)
-            
-            # Add assistant response to history
-            self._add_assistant_message(response.content, response.metadata)
-            
-            self.status = AgentStatus.IDLE
-            return response
-            
-        except Exception as e:
-            self.status = AgentStatus.ERROR
-            error_info = handle_exception(e, f"{self.agent_type}_chat")
-            self._update_performance_metrics(0, 0, False, str(e))
-            
-            # Return error response
-            return AgentResponse(
-                content=f"I apologize, but I encountered an error: {str(e)}",
-                confidence=0.0,
-                response_time=timer.duration if 'timer' in locals() else 0.0,
-                model_used=self.config.model,
-                metadata={"error": error_info}
-            )
-    
-    async def _generate_response(self, 
-                               context: Dict[str, Any] = None,
-                               use_tools: bool = False) -> AgentResponse:
-        """
-        Generate response using LLM.
-        
-        Args:
-            context: Additional context
-            use_tools: Whether to enable tool usage
-            
-        Returns:
-            Generated response
+            AgentResponse with the generated content and metadata
         """
         try:
-            # Prepare messages for LLM
-            messages = self._prepare_messages_for_llm()
+            # Try to import and use Ollama
+            import ollama
             
-            # Add context if provided
+            # Prepare the full prompt with context
+            full_prompt = prompt
             if context:
-                context_message = self._format_context(context)
-                messages.append({
-                    "role": "user",
-                    "content": f"Additional context: {context_message}"
-                })
+                full_prompt = f"Context: {context}\n\nUser: {prompt}"
             
-            # Generate response with retry logic
-            response_data = await self._generate_with_retry(messages)
+            # Prepare messages for the conversation
+            messages = [{"role": "system", "content": self.system_prompt}]
             
-            # Extract content
-            content = response_data.get("message", {}).get("content", "")
-            if not content.strip():
-                content = "I apologize, but I was unable to generate a response."
+            # Add conversation history
+            for msg in self.conversation_history[-5:]:  # Keep last 5 messages for context
+                messages.append({"role": msg.role.value, "content": msg.content})
             
-            # Clean and process content
-            content = clean_text(content)
+            # Add current prompt
+            messages.append({"role": "user", "content": full_prompt})
             
-            # Extract additional information
-            key_points = self._extract_key_points(content)
-            confidence = self._calculate_confidence(response_data, content)
+            # Generate response using Ollama
+            self.logger.info(f"Generating response with model: {self.config.model}")
             
-            # Create response object
-            response = AgentResponse(
-                content=content,
-                confidence=confidence,
-                key_points=key_points,
-                response_time=response_data.get("response_time", 0.0),
-                token_count=count_words(content),  # Approximation
-                model_used=self.config.model,
-                metadata={
-                    "context_used": context is not None,
-                    "tools_enabled": use_tools,
-                    "generation_timestamp": datetime.now().isoformat()
+            response = ollama.chat(
+                model=self.config.model,
+                messages=messages,
+                options={
+                    "temperature": self.config.temperature,
+                    "num_predict": self.config.max_tokens,
+                    **kwargs
                 }
             )
             
-            # Tool usage if enabled
-            if use_tools and self.tool_manager:
-                response = await self._enhance_with_tools(response, context)
+            content = response['message']['content']
             
-            return response
-            
-        except Exception as e:
-            logger.error(f"Error generating response: {e}")
-            raise
-    
-    async def _generate_with_retry(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
-        """Generate response with retry logic"""
-        last_exception = None
-        
-        for attempt in range(self.config.max_retries):
-            try:
-                response = await self.ollama_client.chat_completion(
-                    model=self.config.model,
-                    messages=messages,
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens
-                )
-                return response
-                
-            except Exception as e:
-                last_exception = e
-                logger.warning(f"Generation attempt {attempt + 1} failed: {e}")
-                
-                if attempt < self.config.max_retries - 1:
-                    await asyncio.sleep(self.config.retry_delay * (attempt + 1))
-        
-        # All retries failed
-        raise last_exception or Exception("Max retries exceeded")
-    
-    def _prepare_messages_for_llm(self) -> List[Dict[str, str]]:
-        """Prepare conversation history for LLM"""
-        messages = []
-        
-        # Limit conversation history to fit context window
-        history_to_use = self._get_relevant_history()
-        
-        for msg in history_to_use:
-            messages.append({
-                "role": msg.role.value,
-                "content": msg.content
-            })
-        
-        return messages
-    
-    def _get_relevant_history(self) -> List[ConversationMessage]:
-        """Get relevant conversation history within context limits"""
-        if not self.config.enable_memory:
-            # Only return system message and last user message
-            system_msgs = [msg for msg in self.conversation_history if msg.role == MessageRole.SYSTEM]
-            recent_msgs = [msg for msg in self.conversation_history[-2:] if msg.role != MessageRole.SYSTEM]
-            return system_msgs + recent_msgs
-        
-        # Use memory limit
-        return self.conversation_history[-self.config.memory_limit:]
-    
-    def _format_context(self, context: Dict[str, Any]) -> str:
-        """Format context dictionary into readable string"""
-        if not context:
-            return ""
-        
-        formatted_parts = []
-        for key, value in context.items():
-            if isinstance(value, (dict, list)):
-                value_str = json.dumps(value, indent=2)
-            else:
-                value_str = str(value)
-            formatted_parts.append(f"{key}: {value_str}")
-        
-        return "\n".join(formatted_parts)
-    
-    def _extract_key_points(self, content: str) -> List[str]:
-        """Extract key points from response content"""
-        if not content:
-            return []
-        
-        # Simple extraction based on bullet points, numbered lists, or sentences
-        key_points = []
-        
-        # Look for bullet points
-        bullet_pattern = r'(?:^|\n)[-•*]\s*(.+)'
-        bullets = re.findall(bullet_pattern, content, re.MULTILINE)
-        key_points.extend(bullets)
-        
-        # Look for numbered lists
-        numbered_pattern = r'(?:^|\n)\d+\.\s*(.+)'
-        numbered = re.findall(numbered_pattern, content, re.MULTILINE)
-        key_points.extend(numbered)
-        
-        # If no structured points found, extract first few sentences
-        if not key_points:
-            sentences = re.split(r'[.!?]+', content)
-            key_points = [s.strip() for s in sentences[:3] if s.strip() and len(s.strip()) > 20]
-        
-        # Clean and limit key points
-        cleaned_points = []
-        for point in key_points[:5]:  # Max 5 key points
-            point = point.strip()
-            if len(point) > 10 and len(point) < 200:
-                cleaned_points.append(point)
-        
-        return cleaned_points
-    
-    def _calculate_confidence(self, response_data: Dict[str, Any], content: str) -> float:
-        """Calculate confidence score for response"""
-        base_confidence = 0.7  # Default baseline
-        
-        # Adjust based on response length
-        if len(content) < 20:
-            base_confidence -= 0.3  # Very short responses are less confident
-        elif len(content) > 200:
-            base_confidence += 0.1  # Longer responses may be more thoughtful
-        
-        # Adjust based on response time (very fast or very slow responses may be less reliable)
-        response_time = response_data.get("response_time", 0)
-        if response_time < 1.0:
-            base_confidence -= 0.1  # Too fast
-        elif response_time > 30.0:
-            base_confidence -= 0.2  # Too slow
-        
-        # Adjust based on content quality indicators
-        if any(phrase in content.lower() for phrase in ["i don't know", "uncertain", "not sure"]):
-            base_confidence -= 0.2
-        
-        if any(phrase in content.lower() for phrase in ["specifically", "precisely", "definitely"]):
-            base_confidence += 0.1
-        
-        return max(0.0, min(1.0, base_confidence))
-    
-    async def _enhance_with_tools(self, response: AgentResponse, context: Dict[str, Any] = None) -> AgentResponse:
-        """Enhance response with tool usage if applicable"""
-        if not self.tool_manager:
-            return response
-        
-        try:
-            # Check if response would benefit from fact-checking
-            if any(keyword in response.content.lower() for keyword in 
-                   ["fact", "statistic", "study", "research", "data", "evidence"]):
-                
-                # Extract potential claims for fact-checking
-                claims = self._extract_factual_claims(response.content)
-                for claim in claims[:2]:  # Limit to 2 fact-checks
-                    fact_check = await self.tool_manager.fact_check(
-                        claim, 
-                        agent_id=self.agent_id,
-                        session_id=self.session_id
-                    )
-                    
-                    if fact_check.verdict != "unknown":
-                        response.sources.append({
-                            "type": "fact_check",
-                            "claim": claim,
-                            "verdict": fact_check.verdict,
-                            "confidence": fact_check.confidence,
-                            "explanation": fact_check.explanation
-                        })
-            
-            # Check if response would benefit from web search
-            if any(keyword in response.content.lower() for keyword in 
-                   ["current", "recent", "latest", "news", "update"]):
-                
-                # Extract search queries
-                search_queries = self._extract_search_queries(response.content)
-                for query in search_queries[:1]:  # Limit to 1 search
-                    search_results = await self.tool_manager.web_search(
-                        query,
-                        max_results=3,
-                        agent_id=self.agent_id,
-                        session_id=self.session_id
-                    )
-                    
-                    if search_results:
-                        response.sources.extend([{
-                            "type": "web_search",
-                            "query": query,
-                            "title": result.title,
-                            "url": result.url,
-                            "snippet": result.snippet,
-                            "relevance": result.relevance_score
-                        } for result in search_results])
-        
-        except Exception as e:
-            logger.warning(f"Tool enhancement failed: {e}")
-            # Don't fail the response if tool enhancement fails
-        
-        return response
-    
-    def _extract_factual_claims(self, content: str) -> List[str]:
-        """Extract potential factual claims from content"""
-        # Simple heuristic: sentences containing numbers, percentages, or definitive statements
-        sentences = re.split(r'[.!?]+', content)
-        claims = []
-        
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if (len(sentence) > 20 and 
-                (re.search(r'\d+%', sentence) or  # Percentages
-                 re.search(r'\d+', sentence) or   # Numbers
-                 any(word in sentence.lower() for word in ["studies show", "research indicates", "according to"]))):
-                claims.append(sentence)
-        
-        return claims[:3]  # Limit to 3 claims
-    
-    def _extract_search_queries(self, content: str) -> List[str]:
-        """Extract potential search queries from content"""
-        # Simple heuristic: look for topics that might benefit from current information
-        queries = []
-        
-        # Look for phrases that suggest current events
-        current_patterns = [
-            r'current (\w+(?:\s+\w+)*)',
-            r'recent (\w+(?:\s+\w+)*)',
-            r'latest (\w+(?:\s+\w+)*)',
-            r'(\w+(?:\s+\w+)*) today',
-            r'(\w+(?:\s+\w+)*) news'
-        ]
-        
-        for pattern in current_patterns:
-            matches = re.findall(pattern, content, re.IGNORECASE)
-            queries.extend(matches)
-        
-        return [q.strip() for q in queries if len(q.strip()) > 3][:2]
-    
-    def _add_system_message(self, content: str):
-        """Add system message to conversation history"""
-        message = ConversationMessage(
-            role=MessageRole.SYSTEM,
-            content=content,
-            metadata={"agent_id": self.agent_id}
-        )
-        self.conversation_history.append(message)
-    
-    def _add_user_message(self, content: str, metadata: Dict[str, Any] = None):
-        """Add user message to conversation history"""
-        message = ConversationMessage(
-            role=MessageRole.USER,
-            content=content,
-            metadata=metadata or {},
-            token_count=count_words(content)
-        )
-        self.conversation_history.append(message)
-    
-    def _add_assistant_message(self, content: str, metadata: Dict[str, Any] = None):
-        """Add assistant message to conversation history"""
-        message = ConversationMessage(
-            role=MessageRole.ASSISTANT,
-            content=content,
-            metadata=metadata or {},
-            token_count=count_words(content)
-        )
-        self.conversation_history.append(message)
-    
-    def _update_performance_metrics(self, 
-                                  response_time: float, 
-                                  tokens: int, 
-                                  success: bool, 
-                                  error: str = None):
-        """Update performance tracking metrics"""
-        if not self.config.performance_tracking:
-            return
-        
-        self.performance_metrics["total_requests"] += 1
-        
-        if success:
-            self.performance_metrics["successful_requests"] += 1
-            self.performance_metrics["total_tokens"] += tokens
-            self.performance_metrics["total_response_time"] += response_time
-            
-            # Update average response time
-            successful_requests = self.performance_metrics["successful_requests"]
-            self.performance_metrics["average_response_time"] = (
-                self.performance_metrics["total_response_time"] / successful_requests
+            # Add to conversation history
+            self.conversation_history.append(
+                ConversationMessage(MessageRole.USER, prompt)
             )
-        else:
-            self.performance_metrics["failed_requests"] += 1
-            if error:
-                self.performance_metrics["errors"].append({
-                    "timestamp": datetime.now().isoformat(),
-                    "error": error,
-                    "response_time": response_time
-                })
-                
-                # Keep only last 10 errors
-                if len(self.performance_metrics["errors"]) > 10:
-                    self.performance_metrics["errors"] = self.performance_metrics["errors"][-10:]
+            self.conversation_history.append(
+                ConversationMessage(MessageRole.ASSISTANT, content)
+            )
+            
+            # Create response with metadata
+            agent_response = AgentResponse(
+                content=content,
+                confidence=0.8,  # Default confidence
+                agent_id=self.agent_id,
+                metadata={
+                    "model": self.config.model,
+                    "temperature": self.config.temperature,
+                    "agent_type": self.agent_type,
+                    "session_id": self.config.session_id,
+                    "response_length": len(content),
+                    "context_provided": context is not None
+                }
+            )
+            
+            self.logger.info(f"Generated response of {len(content)} characters")
+            return agent_response
+            
+        except ImportError:
+            self.logger.error("Ollama package not available")
+            return self._create_error_response("Ollama package not installed")
+            
+        except Exception as e:
+            self.logger.error(f"Error generating response: {e}")
+            return self._create_error_response(str(e))
     
-    def get_conversation_summary(self) -> Dict[str, Any]:
-        """Get summary of conversation history"""
-        total_messages = len(self.conversation_history)
-        user_messages = sum(1 for msg in self.conversation_history if msg.role == MessageRole.USER)
-        assistant_messages = sum(1 for msg in self.conversation_history if msg.role == MessageRole.ASSISTANT)
-        total_tokens = sum(msg.token_count or 0 for msg in self.conversation_history)
+    def _create_error_response(self, error_msg: str) -> AgentResponse:
+        """Create an error response when LLM generation fails."""
+        fallback_content = f"I apologize, but I'm having trouble connecting to the language model. Error: {error_msg}"
         
+        return AgentResponse(
+            content=fallback_content,
+            confidence=0.0,
+            agent_id=self.agent_id,
+            metadata={
+                "error": True,
+                "error_message": error_msg,
+                "agent_type": self.agent_type,
+                "session_id": self.config.session_id
+            }
+        )
+    
+    async def process_message(self, message: str, **kwargs) -> AgentResponse:
+        """Process a message. Override in subclasses for specific behavior.
+        
+        Args:
+            message: The input message to process
+            **kwargs: Additional parameters
+            
+        Returns:
+            AgentResponse with the processed response
+        """
+        return await self.generate_response(message, **kwargs)
+    
+    def clear_history(self) -> None:
+        """Clear conversation history."""
+        self.conversation_history.clear()
+        self.logger.info("Conversation history cleared")
+    
+    def get_conversation_summary(self) -> str:
+        """Get a summary of the conversation history."""
+        if not self.conversation_history:
+            return "No conversation history"
+        
+        summary_lines = []
+        for msg in self.conversation_history[-5:]:  # Last 5 messages
+            role_indicator = "User" if msg.role == MessageRole.USER else "Agent"
+            preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
+            summary_lines.append(f"{role_indicator}: {preview}")
+        
+        return "\n".join(summary_lines)
+    
+    def get_agent_info(self) -> Dict[str, Any]:
+        """Get information about this agent."""
         return {
-            "total_messages": total_messages,
-            "user_messages": user_messages,
-            "assistant_messages": assistant_messages,
-            "total_tokens": total_tokens,
-            "conversation_duration": (datetime.now() - self.created_at).total_seconds(),
-            "last_activity": self.last_activity.isoformat()
+            "agent_id": self.agent_id,
+            "agent_type": self.agent_type,
+            "model": self.config.model,
+            "session_id": self.config.session_id,
+            "conversation_length": len(self.conversation_history),
+            "system_prompt": self.system_prompt[:100] + "..." if len(self.system_prompt) > 100 else self.system_prompt
         }
     
-    def get_performance_metrics(self) -> Dict[str, Any]:
-        """Get performance metrics"""
-        metrics = self.performance_metrics.copy()
-        
-        # Add success rate
-        if metrics["total_requests"] > 0:
-            metrics["success_rate"] = metrics["successful_requests"] / metrics["total_requests"]
-        else:
-            metrics["success_rate"] = 0.0
-        
-        # Add tokens per second
-        if metrics["total_response_time"] > 0:
-            metrics["tokens_per_second"] = metrics["total_tokens"] / metrics["total_response_time"]
-        else:
-            metrics["tokens_per_second"] = 0.0
-        
-        return metrics
-    
-    def clear_conversation_history(self, keep_system: bool = True):
-        """Clear conversation history"""
-        if keep_system:
-            # Keep only system messages
-            self.conversation_history = [
-                msg for msg in self.conversation_history 
-                if msg.role == MessageRole.SYSTEM
-            ]
-        else:
-            self.conversation_history.clear()
-        
-        logger.info(f"Conversation history cleared for agent {self.agent_id}")
-    
-    def set_tool_manager(self, tool_manager):
-        """Set tool manager for this agent"""
-        self.tool_manager = tool_manager
-        logger.info(f"Tool manager set for agent {self.agent_id}")
-    
-    def update_config(self, new_config: Dict[str, Any]):
-        """Update agent configuration"""
-        for key, value in new_config.items():
-            if hasattr(self.config, key):
-                setattr(self.config, key, value)
-                logger.info(f"Updated {key} to {value} for agent {self.agent_id}")
-    
-    async def cleanup(self):
-        """Clean up agent resources"""
+    async def test_connection(self) -> bool:
+        """Test if the agent can connect to the LLM successfully."""
         try:
-            await self.ollama_client.close()
-            self.context_cache.clear()
-            self.status = AgentStatus.OFFLINE
-            logger.info(f"Agent {self.agent_id} cleaned up successfully")
+            test_response = await self.generate_response("Hello, can you respond briefly?")
+            return test_response.confidence > 0 and not test_response.metadata.get("error", False)
         except Exception as e:
-            logger.error(f"Error during agent cleanup: {e}")
+            self.logger.error(f"Connection test failed: {e}")
+            return False
+
+
+class SpecializedAgent(BaseAgent):
+    """Base class for specialized agents with specific roles."""
     
-    def __repr__(self):
-        return f"{self.agent_type}(id={self.agent_id}, model={self.config.model}, status={self.status.value})"
+    def __init__(self, config: Optional[AgentConfig] = None, specialization: Optional[str] = None):
+        """Initialize specialized agent.
+        
+        Args:
+            config: Agent configuration
+            specialization: The agent's area of specialization
+        """
+        super().__init__(config)
+        self.specialization = specialization or "General"
+        
+    @property
+    def system_prompt(self) -> str:
+        """Specialized system prompt."""
+        if self.config.system_prompt_override:
+            return self.config.system_prompt_override
+            
+        base_prompt = super().system_prompt
+        specialized_prompt = f"{base_prompt} You are specialized in {self.specialization}."
+        return specialized_prompt
+
+
+def main():
+    """Main function for testing agent functionality."""
+    async def test_agent():
+        print("EchoForge Base Agent Test")
+        print("=" * 50)
+        
+        # Create test agent
+        config = AgentConfig(
+            model="llama3.1:8b",
+            temperature=0.7,
+            session_id="test_session"
+        )
+        
+        agent = BaseAgent(config)
+        print(f"Created agent: {agent.agent_type}")
+        print(f"Agent ID: {agent.agent_id}")
+        print(f"Session ID: {agent.config.session_id}")
+        
+        # Test connection
+        print("\nTesting connection...")
+        connection_ok = await agent.test_connection()
+        print(f"Connection status: {'✓ OK' if connection_ok else '✗ Failed'}")
+        
+        if connection_ok:
+            # Test basic response
+            print("\nTesting response generation...")
+            response = await agent.generate_response("What is 2+2?")
+            print(f"Response: {response.content[:100]}...")
+            print(f"Confidence: {response.confidence}")
+        
+        # Show agent info
+        print(f"\nAgent Info: {agent.get_agent_info()}")
     
-    def __del__(self):
-        """Cleanup when agent is garbage collected"""
-        if hasattr(self, 'ollama_client') and self.ollama_client.session:
-            # Schedule cleanup for the next event loop
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self.cleanup())
-            except RuntimeError:
-                pass  # No event loop running
+    # Run the test
+    asyncio.run(test_agent())
+
+
+if __name__ == "__main__":
+    main()
