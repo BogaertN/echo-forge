@@ -20,6 +20,9 @@ sys.path.insert(0, str(project_root))
 try:
     from agents.base_agent import BaseAgent, AgentConfig, AgentResponse
     from agents.stoic_clarifier import StoicClarifier
+    from agents.proponent import ProponentAgent
+    from agents.opponent import OpponentAgent
+    from agents.synthesizer import SynthesizerAgent
     from db import DatabaseManager
 except ImportError as e:
     logging.error(f"Failed to import required components: {e}")
@@ -31,14 +34,18 @@ class DebateSession:
     """Represents an active debate session."""
     session_id: str
     original_question: str
+    refined_question: str = ""
     current_phase: str = "clarification"  # clarification, debate, synthesis, complete
     participants: List[str] = None
     round_count: int = 0
-    max_rounds: int = 6
+    max_rounds: int = 3
+    debate_arguments: List[Dict[str, Any]] = None
     
     def __post_init__(self):
         if self.participants is None:
             self.participants = []
+        if self.debate_arguments is None:
+            self.debate_arguments = []
 
 class Orchestrator:
     """
@@ -77,17 +84,26 @@ class Orchestrator:
         try:
             logger.info(f"Starting clarification for session {session_id}")
             
-            # Create debate session
-            session = DebateSession(
-                session_id=session_id,
-                original_question=question,
-                current_phase="clarification"
-            )
-            self.active_sessions[session_id] = session
-            
-            # Save session to database
-            if self.db_manager:
-                self.db_manager.create_debate_session(session_id, question)
+            # Check if session already exists
+            existing_session = self.active_sessions.get(session_id)
+            if existing_session:
+                logger.info(f"Session {session_id} already exists, continuing with existing session")
+                session = existing_session
+            else:
+                # Create debate session
+                session = DebateSession(
+                    session_id=session_id,
+                    original_question=question,
+                    current_phase="clarification"
+                )
+                self.active_sessions[session_id] = session
+                
+                # Save session to database (only if new)
+                if self.db_manager:
+                    try:
+                        self.db_manager.create_debate_session(session_id, question)
+                    except Exception as e:
+                        logger.warning(f"Session {session_id} may already exist in database: {e}")
             
             # Create StoicClarifier agent
             clarifier = StoicClarifier(config)
@@ -172,28 +188,31 @@ class Orchestrator:
             # Check if clarification is complete
             if response.metadata.get("clarification_stage") == "completed":
                 session.current_phase = "ready_for_debate"
+                session.refined_question = response.content
                 
-                # Send completion message
+                # Send completion message and auto-start debate
                 if self.connection_manager:
                     await self.connection_manager.send_personal_message({
                         "type": "clarification_complete",
                         "refined_question": response.content,
                         "ready_for_debate": True
                     }, session_id)
-            
-            # Send response via WebSocket
-            if self.connection_manager:
-                await self.connection_manager.send_personal_message({
-                    "type": "agent_response",
-                    "agent": "clarifier",
-                    "phase": "clarification",
-                    "content": response.content,
-                    "confidence": response.confidence,
-                    "metadata": response.metadata
-                }, session_id)
-                logger.info(f"✓ Sent clarification follow-up to frontend for session {session_id}")
+                
+                # Auto-start the debate with the refined question
+                await asyncio.sleep(1)  # Brief pause for UI
+                await self.start_debate(response.content, session_id)
             else:
-                logger.warning("⚠️ Connection manager not available - response not sent to frontend")
+                # Send response via WebSocket
+                if self.connection_manager:
+                    await self.connection_manager.send_personal_message({
+                        "type": "agent_response",
+                        "agent": "clarifier",
+                        "phase": "clarification",
+                        "content": response.content,
+                        "confidence": response.confidence,
+                        "metadata": response.metadata
+                    }, session_id)
+                    logger.info(f"✓ Sent clarification follow-up to frontend for session {session_id}")
             
             return response
             
@@ -203,7 +222,7 @@ class Orchestrator:
     
     async def start_debate(self, refined_question: str, session_id: str):
         """
-        Start the main debate phase.
+        Start the main debate phase with Proponent vs Opponent.
         
         Args:
             refined_question: The clarified question
@@ -214,25 +233,213 @@ class Orchestrator:
             if not session:
                 raise ValueError(f"No active session found for {session_id}")
             
-            logger.info(f"Starting debate for session {session_id}")
+            logger.info(f"Starting multi-agent debate for session {session_id}")
             session.current_phase = "debate"
+            session.refined_question = refined_question
             
-            # For now, send a placeholder response
-            # TODO: Implement full debate logic with Proponent/Opponent agents
+            # Create debate agents
+            config = AgentConfig(session_id=session_id)
+            proponent = ProponentAgent(config)
+            opponent = OpponentAgent(config)
             
+            # Send debate start notification
             if self.connection_manager:
                 await self.connection_manager.send_personal_message({
                     "type": "debate_started",
                     "phase": "debate",
-                    "message": f"Debate started for refined question: {refined_question}",
-                    "note": "Full debate implementation coming soon!"
+                    "message": f"Starting multi-agent debate on: {refined_question}",
+                    "participants": ["Proponent", "Opponent"]
                 }, session_id)
-                logger.info(f"✓ Sent debate start notification for session {session_id}")
-            else:
-                logger.warning("⚠️ Connection manager not available - debate start not sent to frontend")
+            
+            # Round 1: Proponent opens
+            logger.info(f"Debate Round 1: Proponent opening for session {session_id}")
+            proponent_opening = await proponent.make_opening_argument(refined_question)
+            session.debate_arguments.append({
+                "round": 1,
+                "agent": "proponent",
+                "content": proponent_opening.content,
+                "confidence": proponent_opening.confidence
+            })
+            
+            # Save and send proponent opening
+            if self.db_manager:
+                self.db_manager.save_agent_message(session_id, "Proponent", "proponent", 
+                                                 proponent_opening.content, proponent_opening.confidence)
+            
+            if self.connection_manager:
+                await self.connection_manager.send_personal_message({
+                    "type": "agent_response",
+                    "agent": "proponent",
+                    "phase": "debate",
+                    "round": 1,
+                    "content": proponent_opening.content,
+                    "confidence": proponent_opening.confidence,
+                    "metadata": proponent_opening.metadata
+                }, session_id)
+            
+            await asyncio.sleep(2)  # Pause between responses
+            
+            # Round 1: Opponent responds
+            logger.info(f"Debate Round 1: Opponent response for session {session_id}")
+            opponent_response = await opponent.make_opening_argument(refined_question, proponent_opening.content)
+            session.debate_arguments.append({
+                "round": 1,
+                "agent": "opponent", 
+                "content": opponent_response.content,
+                "confidence": opponent_response.confidence
+            })
+            
+            # Save and send opponent response
+            if self.db_manager:
+                self.db_manager.save_agent_message(session_id, "Opponent", "opponent",
+                                                 opponent_response.content, opponent_response.confidence)
+            
+            if self.connection_manager:
+                await self.connection_manager.send_personal_message({
+                    "type": "agent_response",
+                    "agent": "opponent",
+                    "phase": "debate", 
+                    "round": 1,
+                    "content": opponent_response.content,
+                    "confidence": opponent_response.confidence,
+                    "metadata": opponent_response.metadata
+                }, session_id)
+            
+            session.round_count = 1
+            
+            # Continue with additional rounds
+            for round_num in range(2, session.max_rounds + 1):
+                await asyncio.sleep(2)
+                
+                # Proponent rebuttal
+                logger.info(f"Debate Round {round_num}: Proponent rebuttal for session {session_id}")
+                proponent_rebuttal = await proponent.make_rebuttal(opponent_response.content, refined_question)
+                session.debate_arguments.append({
+                    "round": round_num,
+                    "agent": "proponent",
+                    "content": proponent_rebuttal.content,
+                    "confidence": proponent_rebuttal.confidence
+                })
+                
+                if self.db_manager:
+                    self.db_manager.save_agent_message(session_id, "Proponent", "proponent",
+                                                     proponent_rebuttal.content, proponent_rebuttal.confidence)
+                
+                if self.connection_manager:
+                    await self.connection_manager.send_personal_message({
+                        "type": "agent_response",
+                        "agent": "proponent",
+                        "phase": "debate",
+                        "round": round_num,
+                        "content": proponent_rebuttal.content,
+                        "confidence": proponent_rebuttal.confidence,
+                        "metadata": proponent_rebuttal.metadata
+                    }, session_id)
+                
+                await asyncio.sleep(2)
+                
+                # Opponent rebuttal
+                logger.info(f"Debate Round {round_num}: Opponent rebuttal for session {session_id}")
+                opponent_rebuttal = await opponent.make_rebuttal(proponent_rebuttal.content, refined_question)
+                session.debate_arguments.append({
+                    "round": round_num,
+                    "agent": "opponent",
+                    "content": opponent_rebuttal.content,
+                    "confidence": opponent_rebuttal.confidence
+                })
+                
+                if self.db_manager:
+                    self.db_manager.save_agent_message(session_id, "Opponent", "opponent",
+                                                     opponent_rebuttal.content, opponent_rebuttal.confidence)
+                
+                if self.connection_manager:
+                    await self.connection_manager.send_personal_message({
+                        "type": "agent_response",
+                        "agent": "opponent",
+                        "phase": "debate",
+                        "round": round_num,
+                        "content": opponent_rebuttal.content,
+                        "confidence": opponent_rebuttal.confidence,
+                        "metadata": opponent_rebuttal.metadata
+                    }, session_id)
+                
+                session.round_count = round_num
+                
+                # Update opponent_response for next round
+                opponent_response = opponent_rebuttal
+            
+            # Debate completed, move to synthesis
+            logger.info(f"Debate completed for session {session_id}, starting synthesis")
+            await self.start_synthesis(session_id)
             
         except Exception as e:
             logger.error(f"Error starting debate for {session_id}: {e}")
+            raise e
+    
+    async def start_synthesis(self, session_id: str):
+        """
+        Start the synthesis phase to find common ground.
+        
+        Args:
+            session_id: Session identifier
+        """
+        try:
+            session = self.active_sessions.get(session_id)
+            if not session:
+                raise ValueError(f"No active session found for {session_id}")
+            
+            logger.info(f"Starting synthesis for session {session_id}")
+            session.current_phase = "synthesis"
+            
+            # Create synthesizer agent
+            config = AgentConfig(session_id=session_id)
+            synthesizer = SynthesizerAgent(config)
+            
+            # Extract arguments by side
+            proponent_args = [arg["content"] for arg in session.debate_arguments if arg["agent"] == "proponent"]
+            opponent_args = [arg["content"] for arg in session.debate_arguments if arg["agent"] == "opponent"]
+            
+            # Generate synthesis
+            synthesis_response = await synthesizer.synthesize_debate(
+                session.refined_question, proponent_args, opponent_args
+            )
+            
+            # Save synthesis
+            if self.db_manager:
+                self.db_manager.save_agent_message(session_id, "Synthesizer", "synthesizer",
+                                                 synthesis_response.content, synthesis_response.confidence)
+            
+            # Send synthesis to frontend
+            if self.connection_manager:
+                await self.connection_manager.send_personal_message({
+                    "type": "agent_response",
+                    "agent": "synthesizer",
+                    "phase": "synthesis", 
+                    "content": synthesis_response.content,
+                    "confidence": synthesis_response.confidence,
+                    "metadata": synthesis_response.metadata
+                }, session_id)
+            
+            # Mark session as complete
+            session.current_phase = "complete"
+            
+            # Send completion notification
+            if self.connection_manager:
+                await self.connection_manager.send_personal_message({
+                    "type": "debate_complete",
+                    "phase": "complete",
+                    "message": "Debate and synthesis completed! You can now reflect on the insights gained.",
+                    "summary": {
+                        "question": session.refined_question,
+                        "rounds": session.round_count,
+                        "arguments": len(session.debate_arguments)
+                    }
+                }, session_id)
+            
+            logger.info(f"✓ Synthesis completed for session {session_id}")
+            
+        except Exception as e:
+            logger.error(f"Error in synthesis for {session_id}: {e}")
             raise e
     
     async def handle_user_message(self, message_data: Dict[str, Any], session_id: str):
@@ -261,14 +468,16 @@ class Orchestrator:
                 await self.start_debate(refined_question, session_id)
                 
             else:
-                logger.warning(f"Unknown message type: {message_type}")
-                
-                # Send unknown message type response
-                if self.connection_manager:
-                    await self.connection_manager.send_personal_message({
-                        "type": "error",
-                        "message": f"Unknown message type: {message_type}"
-                    }, session_id)
+                # Treat any other message as a clarification response if we're in that phase
+                session = self.active_sessions.get(session_id)
+                if session and session.current_phase == "clarification":
+                    user_response = message_data.get('question', message_data.get('message', ''))
+                    if user_response:
+                        await self.process_clarification_response(user_response, session_id)
+                    else:
+                        logger.warning(f"No valid response content in message: {message_data}")
+                else:
+                    logger.warning(f"Unknown message type: {message_type} for session in phase: {session.current_phase if session else 'none'}")
                 
         except Exception as e:
             logger.error(f"Error handling user message for {session_id}: {e}")
@@ -290,10 +499,12 @@ class Orchestrator:
         return {
             "session_id": session_id,
             "original_question": session.original_question,
+            "refined_question": session.refined_question,
             "current_phase": session.current_phase,
             "participants": session.participants,
             "round_count": session.round_count,
-            "max_rounds": session.max_rounds
+            "max_rounds": session.max_rounds,
+            "arguments_count": len(session.debate_arguments)
         }
     
     def end_session(self, session_id: str):
@@ -321,8 +532,8 @@ class Orchestrator:
 
 async def main():
     """Main function for testing orchestrator."""
-    print("EchoForge Orchestrator Test")
-    print("=" * 40)
+    print("EchoForge Multi-Agent Orchestrator Test")
+    print("=" * 50)
     
     # Create orchestrator
     orchestrator = Orchestrator()
@@ -341,14 +552,18 @@ async def main():
         response = await orchestrator.start_clarification(test_question, config, test_session_id)
         print(f"Clarification response: {response.content[:150]}...")
         
+        # Simulate clarification completion and auto-start debate
+        clarification_complete_response = "I want to explore whether government regulation of artificial intelligence development and deployment should be implemented."
+        await orchestrator.process_clarification_response(clarification_complete_response, test_session_id)
+        
         # Test session status
         status = orchestrator.get_session_status(test_session_id)
-        print(f"Session status: {status}")
+        print(f"Final session status: {status}")
         
     except Exception as e:
         print(f"Error during test: {e}")
     
-    print("Orchestrator test completed")
+    print("Multi-agent orchestrator test completed")
 
 
 if __name__ == "__main__":

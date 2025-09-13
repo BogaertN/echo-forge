@@ -123,25 +123,31 @@ Please help clarify this question by asking ONE thoughtful follow-up question th
             AgentResponse with next clarifying question or refined question
         """
         
-        if self.clarification_rounds >= self.max_clarification_rounds:
-            # Final synthesis
+        # Auto-complete after 2 rounds or if user gives substantial response
+        if self.clarification_rounds >= 2 or len(user_response.strip()) > 100:
+            # Final synthesis - create refined question for debate
             prompt = f"""Based on our clarification dialogue, the user started with: "{original_question}"
 
 Their latest response was: "{user_response}"
 
-Please provide a refined, clear version of their question that would be excellent for a structured debate. The refined question should be:
+Please provide a clear, refined version of their question that would be excellent for a structured debate. The refined question should be:
 - Specific and focused
-- Free of ambiguity
+- Free of ambiguity  
 - Suitable for exploring multiple perspectives
 - Intellectually substantive
 
-Provide the refined question and explain how it improves on the original."""
+Format your response as:
+REFINED QUESTION: [The refined question]
+USER POSITION SUMMARY: [A brief summary of the user's perspective and what they want to explore]
+
+This refined question will now be used for a multi-agent debate between Proponent and Opponent agents."""
             
             response = await self.generate_response(prompt)
             response.metadata.update({
                 "clarification_stage": "completed",
                 "refined_question": True,
-                "original_question": original_question
+                "original_question": original_question,
+                "ready_for_debate": True
             })
             
             return response
@@ -154,7 +160,7 @@ In response to our clarification, they said: "{user_response}"
 
 Based on their response, ask ONE more clarifying question that builds on what they've shared and helps them get even more specific about what they want to explore.
 
-Focus on helping them think deeper about their question."""
+Focus on helping them think deeper about their question. After this, we'll proceed to the debate phase."""
             
             return await self.generate_response(prompt)
     
