@@ -1,298 +1,293 @@
-#!/usr/bin/env python3
 """
-Base agent class for EchoForge.
-Provides common functionality for all AI agents including LLM integration.
+agents/base_agent.py - Base class for all EchoForge agents
 """
-
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
-from enum import Enum
-import uuid
 import logging
-import asyncio
+import httpx
+import time
+from typing import List, Dict, Optional, Any
 from datetime import datetime
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class MessageRole(Enum):
-    """Message roles for conversation tracking."""
-    USER = "user"
-    ASSISTANT = "assistant"
-    SYSTEM = "system"
-
-@dataclass
-class ConversationMessage:
-    """Represents a single message in a conversation."""
-    role: MessageRole
-    content: str
-    timestamp: Optional[str] = None
-    
-    def __post_init__(self):
-        if self.timestamp is None:
-            self.timestamp = datetime.now().isoformat()
-
-@dataclass
-class AgentConfig:
-    """Configuration for AI agents."""
-    model: str = "llama3.1:8b"
-    temperature: float = 0.7
-    max_tokens: int = 2048
-    timeout: int = 60
-    session_id: Optional[str] = None  # Fixed: Added session_id parameter
-    tools_enabled: bool = True
-    ollama_base_url: str = "http://localhost:11434"
-    system_prompt_override: Optional[str] = None
-    
-    def __post_init__(self):
-        if self.session_id is None:
-            self.session_id = str(uuid.uuid4())
-
-@dataclass
-class AgentResponse:
-    """Response from an AI agent."""
-    content: str
-    confidence: float = 0.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    timestamp: Optional[str] = None
-    agent_id: Optional[str] = None
-    
-    def __post_init__(self):
-        if self.timestamp is None:
-            self.timestamp = datetime.now().isoformat()
-
 class BaseAgent:
-    """Base class for all AI agents in EchoForge."""
+    """
+    Base class for all EchoForge agents with complete LLM integration
+    """
     
-    def __init__(self, config: Optional[AgentConfig] = None):
-        """Initialize the base agent.
+    def __init__(self, agent_id: str, model: str = "llama3.1:8b", system_prompt: str = None):
+        self.agent_id = agent_id
+        self.model = model
+        self.system_prompt = system_prompt
+        self.conversation_history: List[Dict[str, str]] = []
+        self.performance_metrics = {
+            "total_requests": 0,
+            "successful_requests": 0,
+            "average_response_time": 0,
+            "total_tokens": 0
+        }
         
-        Args:
-            config: Agent configuration. If None, uses default config.
-        """
-        self.config = config or AgentConfig()
-        self.agent_id = str(uuid.uuid4())
-        self.conversation_history: List[ConversationMessage] = []
-        self.agent_type = self.__class__.__name__
-        
-        # Set up logging for this agent
-        self.logger = logging.getLogger(f"agents.{self.agent_type.lower()}")
-        self.logger.info(f"Initialized {self.agent_type} agent: {self.agent_id}")
-        
-    @property
-    def system_prompt(self) -> str:
-        """Default system prompt. Override in subclasses."""
-        if self.config.system_prompt_override:
-            return self.config.system_prompt_override
-        return "You are a helpful AI assistant participating in structured debates and discussions."
+        logger.info(f"Initialized {self.__class__.__name__} agent: {agent_id}")
     
-    async def generate_response(self, prompt: str, context: Optional[str] = None, **kwargs) -> AgentResponse:
-        """Generate a response using the configured LLM.
-        
-        Args:
-            prompt: The input prompt/question
-            context: Additional context for the response
-            **kwargs: Additional parameters for the LLM
-            
-        Returns:
-            AgentResponse with the generated content and metadata
+    async def generate_response(self, prompt: str, system_prompt: str = None, 
+                              temperature: float = 0.7, max_tokens: int = 2048) -> Dict[str, Any]:
         """
+        Generate response using Ollama with comprehensive error handling and metrics
+        """
+        start_time = time.time()
+        self.performance_metrics["total_requests"] += 1
+        
         try:
-            # Try to import and use Ollama
-            import ollama
+            messages = []
             
-            # Prepare the full prompt with context
-            full_prompt = prompt
-            if context:
-                full_prompt = f"Context: {context}\n\nUser: {prompt}"
+            # Add system prompt if provided
+            final_system_prompt = system_prompt or self.system_prompt
+            if final_system_prompt:
+                messages.append({"role": "system", "content": final_system_prompt})
             
-            # Prepare messages for the conversation
-            messages = [{"role": "system", "content": self.system_prompt}]
+            # Add conversation history (keep last 6 exchanges to avoid context overflow)
+            recent_history = self.conversation_history[-6:] if len(self.conversation_history) > 6 else self.conversation_history
+            messages.extend(recent_history)
             
-            # Add conversation history
-            for msg in self.conversation_history[-5:]:  # Keep last 5 messages for context
-                messages.append({"role": msg.role.value, "content": msg.content})
+            # Add current user prompt
+            messages.append({"role": "user", "content": prompt})
             
-            # Add current prompt
-            messages.append({"role": "user", "content": full_prompt})
+            logger.info(f"Generating response with model: {self.model}")
             
-            # Generate response using Ollama
-            self.logger.info(f"Generating response with model: {self.config.model}")
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    "http://127.0.0.1:11434/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "stream": False,
+                        "options": {
+                            "temperature": temperature,
+                            "num_predict": max_tokens
+                        }
+                    }
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    content = result.get("message", {}).get("content", "No response generated")
+                    
+                    # Calculate metrics
+                    response_time = (time.time() - start_time) * 1000  # ms
+                    token_count = len(content.split())  # Rough token estimate
+                    
+                    # Update conversation history
+                    self.conversation_history.append({"role": "user", "content": prompt})
+                    self.conversation_history.append({"role": "assistant", "content": content})
+                    
+                    # Update performance metrics
+                    self.performance_metrics["successful_requests"] += 1
+                    self.performance_metrics["total_tokens"] += token_count
+                    
+                    # Update average response time
+                    total_time = (self.performance_metrics["average_response_time"] * 
+                                (self.performance_metrics["successful_requests"] - 1) + response_time)
+                    self.performance_metrics["average_response_time"] = total_time / self.performance_metrics["successful_requests"]
+                    
+                    logger.info(f"Generated response: {len(content)} chars, {token_count} tokens, {response_time:.1f}ms")
+                    
+                    return {
+                        "content": content,
+                        "success": True,
+                        "response_time_ms": response_time,
+                        "token_count": token_count,
+                        "model": self.model
+                    }
+                else:
+                    error_msg = f"Ollama API error: HTTP {response.status_code}"
+                    logger.error(error_msg)
+                    return {
+                        "content": error_msg,
+                        "success": False,
+                        "error": f"HTTP {response.status_code}"
+                    }
+                    
+        except httpx.TimeoutException:
+            error_msg = "Request timeout - Ollama took too long to respond"
+            logger.error(error_msg)
+            return {
+                "content": error_msg,
+                "success": False,
+                "error": "timeout"
+            }
             
-            response = ollama.chat(
-                model=self.config.model,
-                messages=messages,
-                options={
-                    "temperature": self.config.temperature,
-                    "num_predict": self.config.max_tokens,
-                    **kwargs
-                }
-            )
-            
-            content = response['message']['content']
-            
-            # Add to conversation history
-            self.conversation_history.append(
-                ConversationMessage(MessageRole.USER, prompt)
-            )
-            self.conversation_history.append(
-                ConversationMessage(MessageRole.ASSISTANT, content)
-            )
-            
-            # Create response with metadata
-            agent_response = AgentResponse(
-                content=content,
-                confidence=0.8,  # Default confidence
-                agent_id=self.agent_id,
-                metadata={
-                    "model": self.config.model,
-                    "temperature": self.config.temperature,
-                    "agent_type": self.agent_type,
-                    "session_id": self.config.session_id,
-                    "response_length": len(content),
-                    "context_provided": context is not None
-                }
-            )
-            
-            self.logger.info(f"Generated response of {len(content)} characters")
-            return agent_response
-            
-        except ImportError:
-            self.logger.error("Ollama package not available")
-            return self._create_error_response("Ollama package not installed")
+        except httpx.ConnectError:
+            error_msg = "Connection error - Is Ollama running?"
+            logger.error(error_msg)
+            return {
+                "content": error_msg,
+                "success": False,
+                "error": "connection_error"
+            }
             
         except Exception as e:
-            self.logger.error(f"Error generating response: {e}")
-            return self._create_error_response(str(e))
-    
-    def _create_error_response(self, error_msg: str) -> AgentResponse:
-        """Create an error response when LLM generation fails."""
-        fallback_content = f"I apologize, but I'm having trouble connecting to the language model. Error: {error_msg}"
-        
-        return AgentResponse(
-            content=fallback_content,
-            confidence=0.0,
-            agent_id=self.agent_id,
-            metadata={
-                "error": True,
-                "error_message": error_msg,
-                "agent_type": self.agent_type,
-                "session_id": self.config.session_id
+            error_msg = f"Unexpected error: {str(e)}"
+            logger.error(error_msg)
+            return {
+                "content": error_msg,
+                "success": False,
+                "error": str(e)
             }
-        )
     
-    async def process_message(self, message: str, **kwargs) -> AgentResponse:
-        """Process a message. Override in subclasses for specific behavior.
-        
-        Args:
-            message: The input message to process
-            **kwargs: Additional parameters
-            
-        Returns:
-            AgentResponse with the processed response
+    async def generate_simple_response(self, prompt: str, system_prompt: str = None) -> str:
         """
-        return await self.generate_response(message, **kwargs)
+        Simple response generation that returns just the content string
+        """
+        result = await self.generate_response(prompt, system_prompt)
+        return result.get("content", "Error generating response")
     
-    def clear_history(self) -> None:
-        """Clear conversation history."""
-        self.conversation_history.clear()
-        self.logger.info("Conversation history cleared")
+    def reset_conversation(self):
+        """Reset conversation history"""
+        self.conversation_history = []
+        logger.info(f"Conversation history reset for {self.agent_id}")
     
-    def get_conversation_summary(self) -> str:
-        """Get a summary of the conversation history."""
-        if not self.conversation_history:
-            return "No conversation history"
-        
-        summary_lines = []
-        for msg in self.conversation_history[-5:]:  # Last 5 messages
-            role_indicator = "User" if msg.role == MessageRole.USER else "Agent"
-            preview = msg.content[:100] + "..." if len(msg.content) > 100 else msg.content
-            summary_lines.append(f"{role_indicator}: {preview}")
-        
-        return "\n".join(summary_lines)
-    
-    def get_agent_info(self) -> Dict[str, Any]:
-        """Get information about this agent."""
+    def get_conversation_summary(self) -> Dict[str, Any]:
+        """Get summary of conversation history"""
         return {
-            "agent_id": self.agent_id,
-            "agent_type": self.agent_type,
-            "model": self.config.model,
-            "session_id": self.config.session_id,
-            "conversation_length": len(self.conversation_history),
-            "system_prompt": self.system_prompt[:100] + "..." if len(self.system_prompt) > 100 else self.system_prompt
+            "total_exchanges": len(self.conversation_history) // 2,
+            "total_messages": len(self.conversation_history),
+            "latest_messages": self.conversation_history[-4:] if self.conversation_history else []
         }
     
-    async def test_connection(self) -> bool:
-        """Test if the agent can connect to the LLM successfully."""
+    def get_performance_metrics(self) -> Dict[str, Any]:
+        """Get performance metrics for this agent"""
+        success_rate = (self.performance_metrics["successful_requests"] / 
+                       max(1, self.performance_metrics["total_requests"])) * 100
+        
+        return {
+            **self.performance_metrics,
+            "success_rate": round(success_rate, 2),
+            "agent_id": self.agent_id,
+            "model": self.model
+        }
+    
+    def set_system_prompt(self, system_prompt: str):
+        """Update the system prompt for this agent"""
+        self.system_prompt = system_prompt
+        logger.info(f"System prompt updated for {self.agent_id}")
+    
+    def add_context(self, context: str, role: str = "system"):
+        """Add context to conversation history"""
+        self.conversation_history.append({
+            "role": role,
+            "content": context
+        })
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Check if the agent can communicate with Ollama"""
         try:
-            test_response = await self.generate_response("Hello, can you respond briefly?")
-            return test_response.confidence > 0 and not test_response.metadata.get("error", False)
+            result = await self.generate_response("Hello", "Respond with just 'OK' if you can see this.")
+            return {
+                "healthy": result.get("success", False),
+                "model": self.model,
+                "response_time_ms": result.get("response_time_ms", 0),
+                "agent_id": self.agent_id
+            }
         except Exception as e:
-            self.logger.error(f"Connection test failed: {e}")
-            return False
+            return {
+                "healthy": False,
+                "error": str(e),
+                "agent_id": self.agent_id
+            }
 
 
 class SpecializedAgent(BaseAgent):
-    """Base class for specialized agents with specific roles."""
+    """
+    Base class for specialized debate agents (Proponent, Opponent, etc.)
+    """
     
-    def __init__(self, config: Optional[AgentConfig] = None, specialization: Optional[str] = None):
-        """Initialize specialized agent.
-        
-        Args:
-            config: Agent configuration
-            specialization: The agent's area of specialization
-        """
-        super().__init__(config)
-        self.specialization = specialization or "General"
-        
-    @property
-    def system_prompt(self) -> str:
-        """Specialized system prompt."""
-        if self.config.system_prompt_override:
-            return self.config.system_prompt_override
+    def __init__(self, agent_id: str, role: str, expertise_area: str = None, **kwargs):
+        super().__init__(agent_id, **kwargs)
+        self.role = role
+        self.expertise_area = expertise_area
+        self.role_specific_prompts = self._get_role_prompts()
+    
+    def _get_role_prompts(self) -> Dict[str, str]:
+        """Get role-specific system prompts"""
+        prompts = {
+            "proponent": """You are a skilled proponent in structured debates. Your role is to:
+1. Present strong, evidence-based arguments supporting your assigned position
+2. Use logical reasoning, data, and real-world examples
+3. Address potential counterarguments proactively
+4. Remain respectful while being persuasive
+5. Structure your arguments clearly with main points and supporting evidence
+6. Keep responses focused and substantive (3-4 paragraphs typically)""",
             
-        base_prompt = super().system_prompt
-        specialized_prompt = f"{base_prompt} You are specialized in {self.specialization}."
-        return specialized_prompt
-
-
-def main():
-    """Main function for testing agent functionality."""
-    async def test_agent():
-        print("EchoForge Base Agent Test")
-        print("=" * 50)
+            "opponent": """You are a skilled opponent in structured debates. Your role is to:
+1. Present compelling counter-arguments and critiques
+2. Identify potential flaws, risks, and negative consequences
+3. Use evidence and logical reasoning to challenge positions
+4. Offer alternative perspectives and solutions
+5. Be thorough but respectful in your analysis
+6. Structure critiques clearly with specific points and evidence
+7. Keep responses focused and substantive (3-4 paragraphs typically)""",
+            
+            "synthesizer": """You are a wise synthesizer who integrates different perspectives. Your role is to:
+1. Identify valid points from all sides of a debate
+2. Find areas of common ground and shared values
+3. Suggest balanced approaches that address multiple concerns
+4. Provide actionable insights and recommendations
+5. Help users see nuance and complexity in issues
+6. Bridge differences constructively
+7. Offer thoughtful, balanced conclusions""",
+            
+            "auditor": """You are an impartial auditor who evaluates argument quality. Your role is to:
+1. Assess the logical soundness of arguments
+2. Identify logical fallacies and weak reasoning
+3. Evaluate the quality and relevance of evidence
+4. Point out biases and unsupported claims
+5. Suggest improvements for stronger argumentation
+6. Maintain objectivity and fairness in assessments""",
+            
+            "specialist": f"""You are a domain specialist with expertise in {self.expertise_area or 'your field'}. Your role is to:
+1. Provide expert knowledge and insights
+2. Offer technical accuracy and depth
+3. Explain complex concepts clearly
+4. Share relevant research and best practices
+5. Identify domain-specific considerations others might miss
+6. Balance expertise with accessibility"""
+        }
         
-        # Create test agent
-        config = AgentConfig(
-            model="llama3.1:8b",
-            temperature=0.7,
-            session_id="test_session"
-        )
-        
-        agent = BaseAgent(config)
-        print(f"Created agent: {agent.agent_type}")
-        print(f"Agent ID: {agent.agent_id}")
-        print(f"Session ID: {agent.config.session_id}")
-        
-        # Test connection
-        print("\nTesting connection...")
-        connection_ok = await agent.test_connection()
-        print(f"Connection status: {'✓ OK' if connection_ok else '✗ Failed'}")
-        
-        if connection_ok:
-            # Test basic response
-            print("\nTesting response generation...")
-            response = await agent.generate_response("What is 2+2?")
-            print(f"Response: {response.content[:100]}...")
-            print(f"Confidence: {response.confidence}")
-        
-        # Show agent info
-        print(f"\nAgent Info: {agent.get_agent_info()}")
+        return prompts
     
-    # Run the test
-    asyncio.run(test_agent())
+    async def generate_role_response(self, prompt: str, context: str = None) -> str:
+        """Generate response using role-specific system prompt"""
+        system_prompt = self.role_specific_prompts.get(self.role, self.system_prompt)
+        
+        if context:
+            full_prompt = f"Context: {context}\n\nRequest: {prompt}"
+        else:
+            full_prompt = prompt
+            
+        result = await self.generate_response(full_prompt, system_prompt)
+        return result.get("content", f"Error generating {self.role} response")
 
 
-if __name__ == "__main__":
-    main()
+# Specialized agent implementations
+class ProponentAgent(SpecializedAgent):
+    def __init__(self, agent_id: str, **kwargs):
+        super().__init__(agent_id, "proponent", **kwargs)
+
+
+class OpponentAgent(SpecializedAgent):
+    def __init__(self, agent_id: str, **kwargs):
+        super().__init__(agent_id, "opponent", **kwargs)
+
+
+class SynthesizerAgent(SpecializedAgent):
+    def __init__(self, agent_id: str, **kwargs):
+        super().__init__(agent_id, "synthesizer", **kwargs)
+
+
+class AuditorAgent(SpecializedAgent):
+    def __init__(self, agent_id: str, **kwargs):
+        super().__init__(agent_id, "auditor", **kwargs)
+
+
+class SpecialistAgent(SpecializedAgent):
+    def __init__(self, agent_id: str, expertise_area: str, **kwargs):
+        super().__init__(agent_id, "specialist", expertise_area, **kwargs)
